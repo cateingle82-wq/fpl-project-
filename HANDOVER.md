@@ -8,7 +8,7 @@ the project back up, in a new session or otherwise.
 ## Where things stand
 
 All work from both sessions is committed and pushed to
-`github.com/cateingle82-wq/fpl-project-`, `main`, up to `b0ba724`. Local
+`github.com/cateingle82-wq/fpl-project-`, `main`, up to `0da9ef5`. Local
 working tree is clean. `pytest -q` passes (see **Running things** below).
 
 ## What this session did (chronological)
@@ -141,32 +141,24 @@ Not tracked in git (regenerate locally, see `.gitignore` for why):
   profiling if anyone wants to push the horizon slider higher; likely the
   free-transfer-banking linearization or the per-week club-limit
   constraints blowing up the branch-and-bound tree.
-- **"Average per gameweek" (~75-83) looks high vs real backtested
-  outcomes.** Checked against `backtest_results.csv`'s `top11_shrunk`
-  (real points scored by the model's top-11 picks in the 3 gameweeks
-  backtested so far, GW2-4 — actual outcomes, not predictions): averages
-  ~5.3 pts/player. Back-of-envelope real total: 11 × 5.3 + a captain
-  bonus ≈ 66-68/week, noticeably below what the app currently shows as
-  "expected." Likely cause: `ppg`/`ppg_shrunk` this early (GW6) is built
-  from only ~5 real games per player, a sample that hasn't yet included
-  the bad patches, dry spells, rotation and minor injuries every player
-  has over a 38-game season — systematically optimistic not because the
-  model is broken, but because nothing bad has happened YET. Some
-  elevation above a typical manager's average is genuinely expected too
-  (this is the model-optimal XI, not an average manager's), just maybe
-  not this much. Caveat: only 3 backtested gameweeks exist — too few to
-  call this a confirmed bias rather than noise, by the project's own
-  standard elsewhere ("don't tune on fewer than a handful of GWs").
-
-  **Suggested next step**: add a direct "predicted vs actual team total"
-  check to `backtest.py` — compare what `xpts_gw1` predicted for a whole
-  XI+captain going into a gameweek against what that exact combination
-  really scored, in the same units the "Average per gameweek" metric
-  uses (a team total, not `backtest.py`'s current per-player top-11
-  metric). That gives a real, growing calibration record instead of a
-  one-off gut check, and would let the dashboard eventually show "your
-  expected total has historically run N% high/low" next to the number
-  itself.
+- **"Average per gameweek" ran high vs real backtested outcomes — RESOLVED.**
+  Originally flagged as looking ~75-83 vs a ~66-68 real-world estimate.
+  Built the suggested fix: `backtest.py`'s `evaluate()` now reports
+  `predicted_team_total`/`actual_team_total` directly (same "XI + captain
+  double" unit the dashboard uses), and `fpl_stage0.calibration_factor()`
+  reads that track record back into `build_table()` as a single global
+  correction applied to every `xw{w}` column. Requires 3+ backtested
+  gameweeks before applying anything (same floor as elsewhere in this
+  project); degrades to no correction on any missing data. Live factor is
+  currently ×0.708 (confirms the original ~41% over-prediction), and
+  "Average per gameweek" now shows ~55 instead of ~77 — close to the
+  ~66-68 real-world estimate given the model-optimal squad should
+  outscore that current-squad estimate somewhat, not match it exactly.
+  Surfaced transparently in the UI with the applied factor and a pointer
+  to Model Health for the gameweek count it's based on. Still worth
+  re-checking as more gameweeks accumulate — the factor will drift as
+  `backtest_results.csv` grows, and could over- or under-correct once
+  there's more than a handful of weeks behind it.
 
 - **`ml_holdout_results.csv` correlation still doesn't beat the `roll3`
   baseline** (0.707-0.708 vs 0.712) even after `rest_days`/xG-xA
