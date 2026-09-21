@@ -129,6 +129,8 @@ def _standardize_history_rows(el, hist, position):
             "creativity": h["creativity"], "threat": h["threat"],
             "bps": h["bps"], "bonus": h["bonus"],
             "expected_goal_involvements": h.get("expected_goal_involvements"),
+            "expected_goals": h.get("expected_goals"),
+            "expected_assists": h.get("expected_assists"),
             "value": h["value"], "starts": h.get("starts"),
         })
     return rows
@@ -162,6 +164,7 @@ def player_base_features(boot, histories, next_gw):
             "influence": np.nan, "creativity": np.nan, "threat": np.nan,
             "bps": np.nan, "bonus": np.nan,
             "expected_goal_involvements": np.nan,
+            "expected_goals": np.nan, "expected_assists": np.nan,
             "value": el["now_cost"], "starts": np.nan,
         })
 

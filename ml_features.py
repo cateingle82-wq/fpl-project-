@@ -17,10 +17,12 @@ Standard input schema (one row per player per gameweek played), whatever
 the source:
     player_id, season, gw, position, team_id, opponent_id, was_home,
     total_points, minutes, ict_index, influence, creativity, threat,
-    bps, bonus, expected_goal_involvements, value, starts
+    bps, bonus, expected_goal_involvements, expected_goals,
+    expected_assists, value, starts
 
-`expected_goal_involvements` may be all-NaN (older seasons didn't track
-xG) — every rolling feature built from it degrades to NaN too, and the
+`expected_goal_involvements`/`expected_goals`/`expected_assists` may be
+all-NaN (older seasons didn't track xG) — every rolling feature built
+from them degrades to NaN too, and the
 model (HistGradientBoostingRegressor) handles NaN inputs natively, so
 older seasons still contribute their other features instead of being
 dropped entirely.
@@ -52,8 +54,8 @@ LONG_WINDOW = 10
 # counts as a start).
 ROLLED_STATS = (
     "total_points", "minutes", "ict_index", "bps",
-    "expected_goal_involvements", "influence", "creativity", "threat",
-    "bonus", "starts",
+    "expected_goal_involvements", "expected_goals", "expected_assists",
+    "influence", "creativity", "threat", "bonus", "starts",
 )
 LONG_ROLLED_STATS = ("total_points", "minutes", "starts")
 

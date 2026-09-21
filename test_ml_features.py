@@ -20,6 +20,7 @@ def make_toy_rows():
             "influence": 0, "creativity": 0, "threat": 0,
             "bps": p * 3, "bonus": 0,
             "expected_goal_involvements": 0.1 * p,
+            "expected_goals": 0.06 * p, "expected_assists": 0.04 * p,
             "value": 55, "starts": 1,
         })
     return pd.DataFrame(rows)

@@ -110,6 +110,19 @@ def standardize_season(season):
             gws["expected_goal_involvements"], errors="coerce"
         ) if "expected_goal_involvements" in gws.columns
         else pd.Series(float("nan"), index=gws.index),
+        # Split out from the combined xGI above so the model can tell a
+        # pure poacher (high xG, low xA) from a creator (the reverse) —
+        # same reasoning as influence/creativity/threat being rolled
+        # separately instead of only as the combined ict_index. Same
+        # older-seasons-never-tracked-this NaN fallback as xGI.
+        "expected_goals": pd.to_numeric(
+            gws["expected_goals"], errors="coerce"
+        ) if "expected_goals" in gws.columns
+        else pd.Series(float("nan"), index=gws.index),
+        "expected_assists": pd.to_numeric(
+            gws["expected_assists"], errors="coerce"
+        ) if "expected_assists" in gws.columns
+        else pd.Series(float("nan"), index=gws.index),
         "value": gws["value"],
         "starts": pd.to_numeric(gws["starts"], errors="coerce")
         if "starts" in gws.columns else pd.Series(float("nan"), index=gws.index),
