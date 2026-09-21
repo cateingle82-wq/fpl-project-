@@ -325,6 +325,12 @@ if st.button("Run optimiser", type="primary"):
     st.caption(f"Solved over {horizon} week(s) (slider was set to {horizon_weeks}). "
                 "If you change the slider, you must click **Run optimiser** again — "
                 "moving the slider alone doesn't re-solve anything.")
+    cal_factor = info["calibration_factor"].iloc[0] if "calibration_factor" in info.columns else 1.0
+    if abs(cal_factor - 1.0) > 1e-6:
+        st.caption(f"📐 Calibration: all predictions above are scaled ×{cal_factor:.3f}, "
+                   f"learned from backtest.py's own predicted-vs-actual track record "
+                   f"(Model Health in the sidebar has the detail and the gameweek count "
+                   f"it's based on — treat it as provisional until that grows).")
 
     current = set(current_ids)
     out_ids = sorted(current - set(chosen), key=lambda p: -info.loc[p, "xpts"])

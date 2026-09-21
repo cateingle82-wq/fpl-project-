@@ -13,6 +13,8 @@ Run:  pip install requests pandas
       python fpl_stage0.py
 """
 
+import os
+
 import requests
 import numpy as np
 import pandas as pd
@@ -94,6 +96,21 @@ RECENT_MINUTES_WEIGHT = 0.6  # weight on the recent window vs the season-long mi
 # heuristic silently degrading, not crashing the whole pipeline — nothing
 # about the tested heuristic path below changes when this is off or fails.
 USE_ML_COLD_START = True
+
+# A single global correction applied to every xw{w}/xpts value at the end
+# of build_table(), derived from backtest.py's own track record
+# (predicted_team_total vs actual_team_total in backtest_results.csv) —
+# the model's own measured bias fed back into itself, not a hand-picked
+# fudge factor. Deliberately ONE number, not per-position/per-price:
+# MIN_CALIBRATION_GAMEWEEKS worth of data is nowhere near enough to fit
+# anything finer without overfitting to noise, the same "don't tune on a
+# handful of gameweeks" discipline this project already applies in
+# backtest.py, ml_train.py and chips.chip_scores. Set USE_CALIBRATION =
+# False to see the raw, uncorrected model (e.g. while investigating
+# whether a discrepancy is upstream of calibration).
+USE_CALIBRATION = True
+CALIBRATION_RESULTS_PATH = "backtest_results.csv"
+MIN_CALIBRATION_GAMEWEEKS = 3
 
 
 def get(endpoint):
@@ -279,6 +296,44 @@ def recent_mins_share(element_ids, histories, n=RECENT_GAMES_WINDOW):
     return out
 
 
+def calibration_factor(path=CALIBRATION_RESULTS_PATH, min_gameweeks=MIN_CALIBRATION_GAMEWEEKS):
+    """
+    A single multiplicative correction for every xw{w}/xpts value, i.e.
+    total real points scored / total points the model predicted, summed
+    across every gameweek backtest.py has checked so far (see its
+    predicted_team_total/actual_team_total columns) — the model's own
+    measured track record fed back into itself.
+
+    Summing both totals first, THEN dividing (rather than averaging each
+    gameweek's own ratio) weights every gameweek's real points equally,
+    not every gameweek's RATIO equally — a gameweek with more players
+    fielding shouldn't count the same as a thin one.
+
+    Returns 1.0 (no correction — trust the raw model) if:
+    backtest_results.csv doesn't exist yet, can't be read, predates this
+    feature (missing the calibration columns), or has fewer than
+    min_gameweeks rows — the same "don't tune on a handful of gameweeks"
+    floor used elsewhere in this project. Never raises: this is an
+    optional refinement layered on top of an already-working model, not
+    something that should be able to take the whole pipeline down.
+    """
+    try:
+        if not os.path.exists(path):
+            return 1.0
+        res = pd.read_csv(path)
+        if ("predicted_team_total" not in res.columns
+                or "actual_team_total" not in res.columns
+                or len(res) < min_gameweeks):
+            return 1.0
+        total_pred = res["predicted_team_total"].sum()
+        total_actual = res["actual_team_total"].sum()
+        if total_pred <= 0:
+            return 1.0
+        return total_actual / total_pred
+    except Exception:
+        return 1.0
+
+
 def shrink_ppg(df, k=SHRINKAGE_K):
     """
     Blend each player's own points_per_game with a prior — the ppg a typical
@@ -449,6 +504,27 @@ def build_table(horizon=HORIZON):
             # must never take down the whole optimiser over an optional
             # enhancement.
             print(f"[fpl_stage0] ML cold-start blending skipped: {e}")
+
+    # Calibration: a single global correction learned from backtest.py's
+    # own predicted-vs-actual track record (see calibration_factor's
+    # docstring), applied uniformly to every xw{w} column — heuristic AND
+    # ML-sourced alike, since the bias was measured against the blended
+    # xpts_gw1 the app actually uses, not either source in isolation.
+    # Applied here, before xpts/xpts_gw1 are derived below, so everything
+    # downstream (the optimiser, chip values, the dashboard's own
+    # "Average per gameweek") sees the corrected numbers automatically.
+    # Pass the current module-level config explicitly rather than relying
+    # on calibration_factor's own default parameters — those are bound at
+    # function-definition time, so a monkeypatched CALIBRATION_RESULTS_PATH
+    # (tests) or a config edit (callers) would silently be ignored otherwise.
+    cal_factor = (
+        calibration_factor(CALIBRATION_RESULTS_PATH, MIN_CALIBRATION_GAMEWEEKS)
+        if USE_CALIBRATION else 1.0
+    )
+    df["calibration_factor"] = cal_factor
+    if cal_factor != 1.0:
+        for w in range(horizon):
+            df[f"xw{w}"] = df[f"xw{w}"] * cal_factor
 
     # 'xpts' (horizon total) and 'xpts_gw1' (next week only) are now derived
     # sums/aliases of the per-week columns above, not separately computed —

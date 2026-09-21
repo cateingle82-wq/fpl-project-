@@ -58,6 +58,10 @@ def fake_get(endpoint):
 
 def test_ml_blend_overwrites_only_targeted_players(monkeypatch):
     monkeypatch.setattr(fs0, "get", fake_get)
+    # Isolate from the REAL backtest_results.csv on disk — these tests
+    # check ML-blend wiring specifically, not calibration (see
+    # test_calibration_factor_* below for that).
+    monkeypatch.setattr(fs0, "USE_CALIBRATION", False)
     monkeypatch.setattr(fs0, "USE_ML_COLD_START", True)
 
     monkeypatch.setattr(mp, "fetch_current_histories", lambda ids, **kw: {})
@@ -87,6 +91,10 @@ def test_ml_unavailable_falls_back_cleanly(monkeypatch, capsys):
     """predict_cold_start raising (e.g. no trained model file, a bug, a
     network hiccup mid-fetch) must not take down build_table() at all."""
     monkeypatch.setattr(fs0, "get", fake_get)
+    # Isolate from the REAL backtest_results.csv on disk — these tests
+    # check ML-blend wiring specifically, not calibration (see
+    # test_calibration_factor_* below for that).
+    monkeypatch.setattr(fs0, "USE_CALIBRATION", False)
     monkeypatch.setattr(fs0, "USE_ML_COLD_START", True)
     monkeypatch.setattr(mp, "fetch_current_histories", lambda ids, **kw: {})
 
@@ -101,6 +109,10 @@ def test_ml_unavailable_falls_back_cleanly(monkeypatch, capsys):
 
 def test_ml_disabled_flag_skips_entirely(monkeypatch):
     monkeypatch.setattr(fs0, "get", fake_get)
+    # Isolate from the REAL backtest_results.csv on disk — these tests
+    # check ML-blend wiring specifically, not calibration (see
+    # test_calibration_factor_* below for that).
+    monkeypatch.setattr(fs0, "USE_CALIBRATION", False)
     monkeypatch.setattr(fs0, "USE_ML_COLD_START", False)
     # USE_RECENT_MINUTES fetches histories independently of the ML flag
     # (see fpl_stage0.py), so this still needs mocking here to avoid a
@@ -123,6 +135,10 @@ def test_empty_ml_predictions_leaves_everyone_heuristic(monkeypatch):
     """No cold-start players this run (everyone has enough history) is a
     normal, common case — must not be treated as a failure."""
     monkeypatch.setattr(fs0, "get", fake_get)
+    # Isolate from the REAL backtest_results.csv on disk — these tests
+    # check ML-blend wiring specifically, not calibration (see
+    # test_calibration_factor_* below for that).
+    monkeypatch.setattr(fs0, "USE_CALIBRATION", False)
     monkeypatch.setattr(fs0, "USE_ML_COLD_START", True)
     monkeypatch.setattr(mp, "fetch_current_histories", lambda ids, **kw: {})
     monkeypatch.setattr(mp, "predict_cold_start", lambda *a, **kw: pd.DataFrame())
@@ -130,6 +146,62 @@ def test_empty_ml_predictions_leaves_everyone_heuristic(monkeypatch):
     df, gw = fs0.build_table()
     assert (df["xpts_source"] == "heuristic").all()
     print("4. no cold-start players -> everyone stays heuristic, no error     OK")
+
+
+def test_calibration_factor_missing_file_returns_neutral():
+    assert fs0.calibration_factor(path="definitely_does_not_exist.csv") == 1.0
+    print("5. calibration_factor: missing file -> no correction (1.0)          OK")
+
+
+def test_calibration_factor_too_few_gameweeks_returns_neutral(tmp_path):
+    p = tmp_path / "backtest_results.csv"
+    pd.DataFrame({
+        "predicted_team_total": [100.0, 100.0],
+        "actual_team_total": [50.0, 50.0],
+    }).to_csv(p, index=False)
+    factor = fs0.calibration_factor(path=str(p), min_gameweeks=3)
+    assert factor == 1.0, "only 2 rows, below the min_gameweeks floor -- must not correct"
+    print("6. calibration_factor: below min_gameweeks -> no correction (1.0)   OK")
+
+
+def test_calibration_factor_computes_actual_over_predicted_ratio(tmp_path):
+    """Sums both totals first, THEN divides — a gameweek with more players
+    fielding shouldn't count the same as a thin one, so this must NOT be
+    an average of each gameweek's own ratio."""
+    p = tmp_path / "backtest_results.csv"
+    pd.DataFrame({
+        "predicted_team_total": [100.0, 100.0, 100.0],
+        "actual_team_total": [50.0, 60.0, 70.0],
+    }).to_csv(p, index=False)
+    factor = fs0.calibration_factor(path=str(p), min_gameweeks=3)
+    expected = (50 + 60 + 70) / (100 + 100 + 100)
+    assert abs(factor - expected) < 1e-9
+    print("7. calibration_factor: sums both totals THEN divides                OK")
+
+
+def test_build_table_applies_calibration_when_enabled(monkeypatch, tmp_path):
+    """A known, non-1.0 factor must actually reach the xw{w} columns —
+    proves the flag is really wired into build_table, not just present."""
+    monkeypatch.setattr(fs0, "get", fake_get)
+    monkeypatch.setattr(fs0, "USE_ML_COLD_START", False)
+
+    p = tmp_path / "backtest_results.csv"
+    pd.DataFrame({
+        "predicted_team_total": [100.0, 100.0, 100.0],
+        "actual_team_total": [50.0, 50.0, 50.0],   # -> factor 0.5
+    }).to_csv(p, index=False)
+    monkeypatch.setattr(fs0, "CALIBRATION_RESULTS_PATH", str(p))
+
+    monkeypatch.setattr(fs0, "USE_CALIBRATION", True)
+    df_cal, _ = fs0.build_table()
+    monkeypatch.setattr(fs0, "USE_CALIBRATION", False)
+    df_uncal, _ = fs0.build_table()
+
+    row_cal = df_cal[df_cal["id"] == 2].iloc[0]
+    row_uncal = df_uncal[df_uncal["id"] == 2].iloc[0]
+    assert abs(row_cal["xw0"] - row_uncal["xw0"] * 0.5) < 1e-6
+    assert abs(row_cal["calibration_factor"] - 0.5) < 1e-9
+    print("8. build_table actually applies the calibration factor to xw{w}     OK")
 
 
 if __name__ == "__main__":
