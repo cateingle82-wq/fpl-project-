@@ -429,6 +429,20 @@ if st.button("Run optimiser", type="primary"):
                     out_names = ", ".join(info.loc[p, "name"] for p in transferred_out) or "—"
                     st.caption(f"📋 Planned transfer from GW{gw + w - 1}: "
                                 f"IN {in_names}  |  OUT {out_names}")
+                    # Surface the hit cost too — without this, a week using
+                    # more transfers than it has free ones (paying points
+                    # for the rest) looks identical to a free rebuild, which
+                    # is exactly the confusion this caption exists to avoid.
+                    n_transfers_w = len(transferred_out)
+                    n_hits_w = int(round(hits[w].value()))
+                    n_free_w = opt.FREE_TRANSFERS if w == 0 else int(round(ft[w].value()))
+                    if n_hits_w > 0:
+                        st.caption(f"⚠️ {n_transfers_w} transfer(s) this week, only "
+                                    f"{n_free_w} free — {n_hits_w} hit(s) = "
+                                    f"-{n_hits_w * int(opt.HIT_COST)} pts")
+                    else:
+                        st.caption(f"{n_transfers_w} transfer(s), all free "
+                                    f"({n_free_w} available this week) — no hit.")
                 rotated_in = (set(xi_w) - set(prev_xi)) - transferred_in
                 rotated_out = (set(prev_xi) - set(xi_w)) - transferred_out
                 if rotated_in or rotated_out:
