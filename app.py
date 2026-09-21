@@ -31,7 +31,7 @@ import streamlit as st
 import backtest as bt
 import chips
 import fpl_optimise as opt
-from fpl_stage0 import HORIZON, build_table, horizon_of
+from fpl_stage0 import HORIZON, build_table, fixture_details, horizon_of
 
 st.set_page_config(page_title="FPL Optimiser", layout="wide")
 
@@ -131,13 +131,17 @@ def apply_config():
 
 
 def get_current_squad_and_bank(df, gw):
-    """Manual squad box wins if filled in — bank then comes from the
-    sidebar field, since there's no live account to read it from. Live
-    squad fetch also pulls the REAL bank FPL tracks for that team
-    (entry_history.bank) and uses that in place of the sidebar's Bank
-    field, so it self-updates every week (past transfers, real price
-    moves) instead of relying on you to type in the right number each
-    time you re-run this."""
+    """Manual squad box wins if filled in — bank AND free transfers then
+    come from their sidebar fields, since there's no live account to read
+    them from. Live squad fetch also pulls the REAL bank FPL tracks for
+    that team (entry_history.bank) and the REAL free-transfer count
+    (derived from entry/{id}/history/'s transfer log — see
+    fetch_free_transfers), using both in place of their sidebar fields so
+    they self-update every week instead of relying on you to track and
+    type in the right numbers each time you re-run this. Free transfers
+    is set as a module global on opt (opt.FREE_TRANSFERS) rather than
+    returned, matching how build_problem already reads it — same pattern
+    apply_config() already uses for MAX_TRANSFERS/HIT_COST/BAN_UNAVAILABLE."""
     if manual_squad_input.strip():
         ids = [int(x) for x in manual_squad_input.split(",") if x.strip()]
         bank_t = int(round(opt.BANK * 10))
@@ -149,18 +153,43 @@ def get_current_squad_and_bank(df, gw):
                        "(overrides the sidebar Bank field).")
         else:
             bank_t = int(round(opt.BANK * 10))
+
+        live_ft = opt.fetch_free_transfers(opt.TEAM_ID, gw)
+        if live_ft is not None:
+            opt.FREE_TRANSFERS = live_ft
+            st.caption(f"Free transfers auto-fetched from your team: {live_ft} "
+                       "(overrides the sidebar Free transfers field).")
     if len(ids) != 15:
         st.error(f"Expected 15 players, got {len(ids)}.")
         st.stop()
     return ids, bank_t
 
 
-def player_row(info, p, xpts_col="xpts", tag=""):
+def fixture_labels_for_week(df, fixtures, gw, week_offset):
+    """team_id -> 'OPP (H/A) FDRx' for one specific week (a double shows
+    both fixtures, a blank shows '—') — built once per table-rendering
+    context (not per player row) and passed into player_row, since it's
+    the same lookup for every player on the same team."""
+    teams_map = dict(zip(df["team"], df["team_name"]))
+    details = fixture_details(fixtures, gw + week_offset, 1)
+    labels = {}
+    for team_id, entries in details.items():
+        parts = [f"{teams_map.get(opp_id, '?')} ({'H' if was_home else 'A'}) FDR{fdr}"
+                 for fdr, opp_id, was_home in entries]
+        labels[team_id] = " + ".join(parts)
+    return labels
+
+
+def player_row(info, p, xpts_col="xpts", tag="", fx_labels=None):
     r = info.loc[p]
-    return {
+    row = {
         "Player": r["name"], "Pos": r["pos"], "Team": r["team_name"],
-        "Price": f"£{r['price']:.1f}", "xPts": round(r[xpts_col], 2), "": tag,
+        "Price": f"£{r['price']:.1f}", "xPts": round(r[xpts_col], 2),
     }
+    if fx_labels is not None:
+        row["Fixture"] = fx_labels.get(r["team"], "—")
+    row[""] = tag
+    return row
 
 
 # ----------------------------------------------------------------------------
@@ -218,9 +247,25 @@ with st.sidebar.expander("Model health (backtest)"):
             ["top11_shrunk", "top11_raw", "top11_ppg", "random_11", "best_possible"]
         ])
 
+        if "predicted_team_total" in res.columns:
+            st.write("**Predicted vs actual team total** — same 'starting XI + captain "
+                     "double' unit the Average per gameweek metric uses, so this is the "
+                     "direct check on whether that number runs high or low.")
+            st.line_chart(res.set_index("gw")[["predicted_team_total", "actual_team_total"]])
+            avg_pred = res["predicted_team_total"].mean()
+            avg_actual = res["actual_team_total"].mean()
+            bias_pct = 100 * (avg_pred - avg_actual) / avg_actual if avg_actual else 0.0
+            direction = "over" if bias_pct > 0 else "under"
+            st.caption(f"Predicted team totals run **{abs(bias_pct):.1f}% {direction}** actual, "
+                       f"averaged across {len(res)} gameweek(s)."
+                       + (" Too few gameweeks to call this a confirmed bias rather than "
+                          "noise — treat as provisional." if len(res) < 5 else ""))
+
         st.write("**Averages across all tested gameweeks**")
         cols = ["corr_shrunk", "corr_raw", "corr_naive_ppg",
                 "top11_shrunk", "top11_raw", "top11_ppg", "random_11", "best_possible"]
+        if "predicted_team_total" in res.columns:
+            cols += ["predicted_team_total", "actual_team_total"]
         st.dataframe(res[cols].mean().round(3).to_frame("mean"), use_container_width=True)
 
         st.dataframe(res, hide_index=True, use_container_width=True)
@@ -246,6 +291,8 @@ if st.button("Run optimiser", type="primary"):
     df, gw = get_data(horizon_weeks)
     horizon = horizon_of(df)
     current_ids, bank_t = get_current_squad_and_bank(df, gw)
+    fixtures = cached_fixtures()
+    fx_labels_wk0 = fixture_labels_for_week(df, fixtures, gw, 0)
 
     with st.spinner("Solving Stage A (full multi-week squad + transfer plan)..."):
         prob, squad, start, cap, hits, ft, tin, tout, cost_t, budget_t = opt.build_problem(
@@ -292,11 +339,11 @@ if st.button("Run optimiser", type="primary"):
         c1, c2 = st.columns(2)
         with c1:
             st.write("**OUT**")
-            st.dataframe(pd.DataFrame([player_row(info, p) for p in out_ids]),
+            st.dataframe(pd.DataFrame([player_row(info, p, fx_labels=fx_labels_wk0) for p in out_ids]),
                           hide_index=True, use_container_width=True)
         with c2:
             st.write("**IN**")
-            st.dataframe(pd.DataFrame([player_row(info, p) for p in in_ids]),
+            st.dataframe(pd.DataFrame([player_row(info, p, fx_labels=fx_labels_wk0) for p in in_ids]),
                           hide_index=True, use_container_width=True)
 
     n_used_now = len(in_ids)
@@ -374,7 +421,7 @@ if st.button("Run optimiser", type="primary"):
     # confirmed fixtures (not a guess from other seasons — see
     # season_outlook's docstring) for a gameweek where your squad's teams
     # have notably more fixtures than anything currently visible.
-    outlook = chips.season_outlook(df, current_ids, cached_fixtures(), gw, horizon)
+    outlook = chips.season_outlook(df, current_ids, fixtures, gw, horizon)
     if outlook and not outlook["within_horizon"] and outlook["best_gw_fixtures"] > outlook["this_week_fixtures"]:
         st.info(f"📅 Beyond your {horizon}-week horizon: GW{outlook['best_gw']} currently has "
                 f"{outlook['best_gw_fixtures']} fixtures across your squad's teams, vs "
@@ -408,13 +455,14 @@ if st.button("Run optimiser", type="primary"):
         fh_xi_sorted = sorted(fh_xi, key=lambda p: (order[info.loc[p, "pos"]], -info.loc[p, "xw0"]))
         st.write("XI")
         st.dataframe(
-            pd.DataFrame([player_row(info, p, "xw0", "(C)" if p == fh_cap else "") for p in fh_xi_sorted]),
+            pd.DataFrame([player_row(info, p, "xw0", "(C)" if p == fh_cap else "", fx_labels_wk0)
+                          for p in fh_xi_sorted]),
             hide_index=True, use_container_width=True,
         )
         st.write("Bench")
         fh_bench_sorted = sorted(fh_bench, key=lambda p: -info.loc[p, "xw0"])
         st.dataframe(
-            pd.DataFrame([player_row(info, p, "xw0") for p in fh_bench_sorted]),
+            pd.DataFrame([player_row(info, p, "xw0", fx_labels=fx_labels_wk0) for p in fh_bench_sorted]),
             hide_index=True, use_container_width=True,
         )
 
@@ -523,16 +571,17 @@ if st.button("Run optimiser", type="primary"):
                     st.caption("No change from the previous week.")
             prev_squad, prev_xi = squad_w, xi_w
 
+            fx_labels_w = fixture_labels_for_week(df, fixtures, gw, w)
             xi_sorted = sorted(xi_w, key=lambda p: (order[info.loc[p, "pos"]], -info.loc[p, xpts_col]))
             st.dataframe(
-                pd.DataFrame([player_row(info, p, xpts_col, "(C)" if p == cap_w else "")
+                pd.DataFrame([player_row(info, p, xpts_col, "(C)" if p == cap_w else "", fx_labels_w)
                               for p in xi_sorted]),
                 hide_index=True, use_container_width=True,
             )
             st.write("Bench")
             bench_sorted = sorted(bench_w, key=lambda p: -info.loc[p, xpts_col])
             st.dataframe(
-                pd.DataFrame([player_row(info, p, xpts_col) for p in bench_sorted]),
+                pd.DataFrame([player_row(info, p, xpts_col, fx_labels=fx_labels_w) for p in bench_sorted]),
                 hide_index=True, use_container_width=True,
             )
 

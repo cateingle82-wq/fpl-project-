@@ -114,6 +114,39 @@ def fetch_squad_and_bank(team_id, gw):
     return picks, bank_t
 
 
+def fetch_free_transfers(team_id, current_gw):
+    """
+    Derives the manager's current free-transfer count from their real
+    transfer history (entry/{team_id}/history/), using FPL's own
+    accumulation rule (+1 per week not fully used, capped at
+    MAX_BANKED_FREE_TRANSFERS) — same idea as fetch_squad_and_bank's bank
+    auto-fetch: no need to ask the user to track and type in by hand a
+    number FPL already implies from data it publishes. A wildcard/free-hit
+    week's transfers don't cost a free transfer (FPL's own rule), so those
+    weeks are skipped when simulating depletion.
+
+    Returns None (not a crash) on any failure — missing/private history,
+    a network hiccup, an unexpected response shape — so callers fall back
+    to the manual FREE_TRANSFERS config, the same way a missing bank falls
+    back to the manual BANK config.
+    """
+    if current_gw <= 2:
+        return 1   # GW1 is initial squad selection, not a "transfer"; GW2 always starts at 1
+    try:
+        data = get(f"entry/{team_id}/history/")
+        chip_gws = {c["event"] for c in data.get("chips", [])
+                    if c.get("name") in ("wildcard", "freehit")}
+        used_by_gw = {row["event"]: row["event_transfers"] for row in data.get("current", [])}
+    except Exception:
+        return None
+
+    ft = 1   # free transfers available going into GW2
+    for w in range(2, current_gw):
+        used = 0 if w in chip_gws else used_by_gw.get(w, 0)
+        ft = min(MAX_BANKED_FREE_TRANSFERS, max(0, ft - used) + 1)
+    return ft
+
+
 def fetch_squad(team_id, gw):
     """Thin wrapper over fetch_squad_and_bank for callers that only need
     the 15 player ids (e.g. chips.py, which takes bank from its own

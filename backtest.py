@@ -144,23 +144,42 @@ def evaluate(df):
         with no budget constraint, how many points would they actually
         have scored? Compared against a naive ppg-only baseline, a random
         XI, and the best XI that hindsight could have picked.
+
+    Plus a THIRD view, calibration rather than ranking: predicted_team_total
+    vs actual_team_total — take the model's own top-11-by-xpts_gw1 pick and
+    its own top scorer as captain (double), and compare what it PREDICTED
+    that combination would score against what it ACTUALLY scored. Same
+    "starting XI + captain double" unit the dashboard's "Average per
+    gameweek" metric uses, so this directly answers "does that number run
+    high or low against what's actually happened" — ranking quality
+    (correlation, top-11) can be good even while the absolute scale is
+    off (e.g. an early-season ppg sample optimistic because it hasn't yet
+    seen a player's bad patches), and this is the check that would catch
+    that. Same no-budget/no-position-constraint simplification top11_shrunk
+    already carries — it's an XI-shaped estimate, not a legal squad's.
     """
     corr_shrunk = df["xpts_gw1"].corr(df["actual_points"], method="spearman")
     corr_raw = df["xpts_gw1_raw"].corr(df["actual_points"], method="spearman")
     corr_naive_ppg = df["ppg"].corr(df["actual_points"], method="spearman")
 
     n = min(11, len(df))
-    top11_shrunk = df.nlargest(n, "xpts_gw1")["actual_points"].mean()
+    top11_df = df.nlargest(n, "xpts_gw1")
+    top11_shrunk = top11_df["actual_points"].mean()
     top11_raw = df.nlargest(n, "xpts_gw1_raw")["actual_points"].mean()
     top11_ppg = df.nlargest(n, "ppg")["actual_points"].mean()
     random_11 = df["actual_points"].sample(n, random_state=0).mean()
     best_possible = df.nlargest(n, "actual_points")["actual_points"].mean()
+
+    captain_row = top11_df.nlargest(1, "xpts_gw1").iloc[0]
+    predicted_team_total = top11_df["xpts_gw1"].sum() + captain_row["xpts_gw1"]
+    actual_team_total = top11_df["actual_points"].sum() + captain_row["actual_points"]
 
     return dict(
         n=len(df),
         corr_shrunk=corr_shrunk, corr_raw=corr_raw, corr_naive_ppg=corr_naive_ppg,
         top11_shrunk=top11_shrunk, top11_raw=top11_raw, top11_ppg=top11_ppg,
         random_11=random_11, best_possible=best_possible,
+        predicted_team_total=predicted_team_total, actual_team_total=actual_team_total,
     )
 
 
@@ -187,7 +206,8 @@ def main():
         print(f"GW{gw:>2}  n={r['n']:<4} "
               f"corr shrunk={r['corr_shrunk']:.3f} raw={r['corr_raw']:.3f} ppg={r['corr_naive_ppg']:.3f}  "
               f"top11 shrunk={r['top11_shrunk']:.2f} raw={r['top11_raw']:.2f} "
-              f"random={r['random_11']:.2f} best={r['best_possible']:.2f}")
+              f"random={r['random_11']:.2f} best={r['best_possible']:.2f}  "
+              f"team predicted={r['predicted_team_total']:.1f} actual={r['actual_team_total']:.1f}")
 
     if not results:
         raise SystemExit("No gameweeks had enough data to backtest.")
@@ -195,8 +215,18 @@ def main():
     res = pd.DataFrame(results)
     print("\n=== averages across all tested gameweeks ===")
     cols = ["corr_shrunk", "corr_raw", "corr_naive_ppg",
-            "top11_shrunk", "top11_raw", "top11_ppg", "random_11", "best_possible"]
+            "top11_shrunk", "top11_raw", "top11_ppg", "random_11", "best_possible",
+            "predicted_team_total", "actual_team_total"]
     print(res[cols].mean().round(3).to_string())
+
+    avg_pred = res["predicted_team_total"].mean()
+    avg_actual = res["actual_team_total"].mean()
+    bias_pct = 100 * (avg_pred - avg_actual) / avg_actual if avg_actual else float("nan")
+    direction = "OVER" if bias_pct > 0 else "UNDER"
+    print(f"\nCalibration: predicted team totals run {abs(bias_pct):.1f}% "
+          f"{direction} actual, averaged across {len(res)} gameweek(s). "
+          f"{'Too few gameweeks to call this a real bias vs noise — treat as provisional.' if len(res) < 5 else ''}")
+
     res.to_csv("backtest_results.csv", index=False)
     print("\nSaved backtest_results.csv")
 

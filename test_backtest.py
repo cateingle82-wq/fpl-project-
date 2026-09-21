@@ -119,4 +119,27 @@ assert abs(r2["corr_shrunk"]) < 0.3, "unrelated columns shouldn't show strong co
 assert -1.0 <= r2["corr_shrunk"] <= 1.0
 print("8. correlation sane on unrelated data OK")
 
+# --- 9. evaluate(): a perfect predictor's team-total calibration is exact ---
+# predicted_team_total must equal actual_team_total when xpts_gw1 ==
+# actual_points everywhere (same fixture used in check 7).
+r_perfect = bt.evaluate(perfect)
+assert abs(r_perfect["predicted_team_total"] - r_perfect["actual_team_total"]) < 1e-9, \
+    "a perfect predictor's predicted team total must exactly match its actual team total"
+print("9. perfect predictor's team-total calibration is exact OK")
+
+# --- 10. evaluate(): a systematically inflated predictor shows up as bias ---
+inflated = pd.DataFrame({
+    "xpts_gw1": [x * 1.5 for x in [5, 3, 8, 1, 9, 2, 7, 4, 6, 0, 10, 11]],  # same ranking, 50% too high
+    "actual_points": [5, 3, 8, 1, 9, 2, 7, 4, 6, 0, 10, 11],
+    "xpts_gw1_raw": [5, 3, 8, 1, 9, 2, 7, 4, 6, 0, 10, 11],
+    "ppg": [5, 3, 8, 1, 9, 2, 7, 4, 6, 0, 10, 11],
+})
+r_inflated = bt.evaluate(inflated)
+# ranking quality is untouched (scaling doesn't change order)...
+assert abs(r_inflated["corr_shrunk"] - 1.0) < 1e-9
+# ...but the team-total calibration correctly shows the 50% inflation
+ratio = r_inflated["predicted_team_total"] / r_inflated["actual_team_total"]
+assert abs(ratio - 1.5) < 1e-9, f"expected a 1.5x calibration gap, got {ratio}"
+print("10. a scaled-up (but correctly-ranked) predictor shows up as calibration bias, not correlation OK")
+
 print("\nAll checks passed.")
