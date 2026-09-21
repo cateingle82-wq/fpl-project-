@@ -201,6 +201,54 @@ def test_log_row_appends(tmp_path_str="chip_log_test.csv"):
     print("10. log_row logs one row per horizon week, wc/fh only on week 0  OK")
 
 
+def test_chip_scores_horizon_picks_the_best_visible_week():
+    """Bench Boost/Triple Captain are scored against the horizon itself —
+    this week's value should score 10/10 when it's the best week visible,
+    and something lower (naming the better week) when it isn't."""
+    bb = {0: 10.0, 1: 4.0, 2: 2.0}          # this week (0) IS the best
+    tc = {0: 3.0, 1: 3.0, 2: 9.0}           # week 2 is clearly better
+    scores = chips.chip_scores(bb, tc, wc=0.0, fh=0.0, log_path="nonexistent_log.csv")
+    assert scores["bench_boost"]["score"] == 10.0, scores["bench_boost"]
+    assert "use it now" in scores["bench_boost"]["verdict"].lower()
+    assert scores["triple_captain"]["score"] == 0.0, scores["triple_captain"]
+    assert "GW+2" in scores["triple_captain"]["verdict"]
+    print("12. chip_scores scores bb/tc against the visible horizon           OK")
+
+
+def test_chip_scores_history_needs_a_minimum_and_then_ranks():
+    """Wildcard/Free Hit have no per-week trajectory — scored against
+    logged history instead, with a graceful 'not enough yet' below the
+    minimum, then a real percentile once there's enough."""
+    import os
+    log_path = "chip_score_test_log.csv"
+    if os.path.exists(log_path):
+        os.remove(log_path)
+
+    bb, tc = {0: 1.0}, {0: 1.0}   # irrelevant to this test
+
+    # Below MIN_HISTORY_FOR_SCORE: no file at all yet.
+    scores = chips.chip_scores(bb, tc, wc=50.0, fh=10.0, log_path=log_path)
+    assert scores["wildcard"]["score"] is None
+    assert "not enough" in scores["wildcard"]["verdict"].lower()
+
+    # Log enough prior readings that wc=50 is clearly the best seen.
+    # log_row always writes to the module-level LOG_PATH, not our tmp
+    # path — point it there for this call, then restore it.
+    orig_log_path = chips.LOG_PATH
+    try:
+        chips.LOG_PATH = log_path
+        for wc_val in [10.0, 20.0, 30.0]:
+            chips.log_row(6, bb, tc, wc_val, 5.0, horizon=1)
+    finally:
+        chips.LOG_PATH = orig_log_path
+
+    scores = chips.chip_scores(bb, tc, wc=50.0, fh=5.0, log_path=log_path)
+    assert scores["wildcard"]["score"] == 10.0, scores["wildcard"]
+    assert "best" in scores["wildcard"]["verdict"].lower()
+    os.remove(log_path)
+    print("13. chip_scores needs a history minimum, then ranks correctly      OK")
+
+
 if __name__ == "__main__":
     test_bench_boost_matches_manual_bench_sum()
     test_bench_boost_never_negative()
@@ -213,4 +261,6 @@ if __name__ == "__main__":
     test_free_hit_only_cares_about_week_zero()
     test_free_hit_detail_is_internally_consistent()
     test_log_row_appends()
+    test_chip_scores_horizon_picks_the_best_visible_week()
+    test_chip_scores_history_needs_a_minimum_and_then_ranks()
     print("\nAll checks passed.")

@@ -241,6 +241,119 @@ def log_row(gw, bb, tc, wc, fh, horizon):
                         f"{tc[offset]:.2f}", wc_cell, fh_cell])
 
 
+# How many past logged readings a chip needs before scoring it against
+# its own history means anything — below this, "above/below average" is
+# just noise from a tiny sample, same reasoning as backtest.py/ml_train.py
+# both refusing to draw conclusions from a handful of gameweeks.
+MIN_HISTORY_FOR_SCORE = 3
+
+
+def _percentile_score(value, values):
+    """0-10: where `value` ranks among `values` (10 = highest seen,
+    0 = lowest). Returns 5.0 (neutral) if every value is identical —
+    nothing to rank against, not a real signal either way."""
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-9:
+        return 5.0
+    return 10 * (value - lo) / (hi - lo)
+
+
+def load_chip_history(log_path=None):
+    """Past wildcard/free_hit readings from chip_log.csv (the ones logged
+    on their own target_gw == run_gw row — see log_row) — this chip's own
+    real track record this season, to score a new reading against.
+    Returns ([], []) if the file doesn't exist yet or has no data rows."""
+    log_path = log_path or LOG_PATH
+    wc_hist, fh_hist = [], []
+    if not os.path.exists(log_path):
+        return wc_hist, fh_hist
+    with open(log_path) as f:
+        for row in csv.DictReader(f):
+            if row.get("wildcard"):
+                wc_hist.append(float(row["wildcard"]))
+            if row.get("free_hit"):
+                fh_hist.append(float(row["free_hit"]))
+    return wc_hist, fh_hist
+
+
+def _horizon_verdict(name, score, best_offset):
+    """Bench Boost / Triple Captain verdict — scored against the visible
+    horizon, so it can point at exactly which future week looks better."""
+    if best_offset == 0:
+        if score >= 8:
+            return f"Best week visible for {name} — use it now."
+        return (f"Best week visible for {name}, but only just ahead of "
+                f"the rest — worth a second look before committing.")
+    if score >= 5:
+        return f"Reasonable week for {name}, but GW+{best_offset} looks stronger."
+    return f"Weak week for {name} — GW+{best_offset} looks meaningfully stronger, wait if you can."
+
+
+def _history_verdict(name, score, n_have):
+    """Wildcard / Free Hit verdict — scored against logged history, since
+    there's no cheap per-week trajectory for these two (see chip_scores)."""
+    if score is None:
+        return (f"Not enough logged history for {name} yet "
+                f"({n_have}/{MIN_HISTORY_FOR_SCORE} readings) — check back "
+                f"after a few more runs.")
+    if score >= 8:
+        return f"One of the best {name} readings you've logged this season — strong case to use it."
+    if score >= 5:
+        return f"Above-average {name} reading vs your own history — reasonable, not a standout."
+    return f"Below your own recent average for {name} — may be worth waiting for a better reading."
+
+
+def chip_scores(bb, tc, wc, fh, log_path=None):
+    """
+    0-10 "how good is it to use THIS chip THIS week", plus a plain-English
+    verdict, for all four chips. Two different reference points, because
+    the data available genuinely differs between them:
+
+      Bench Boost / Triple Captain: scored against the VISIBLE HORIZON —
+      bb[w]/tc[w] are already computed for every week, so this week's
+      value is just its percentile against the best/worst weeks already
+      in view. Free (no extra solving), and can name exactly which future
+      week looks better.
+
+      Wildcard / Free Hit: only ever evaluated for "right now" (see their
+      docstrings — a proper per-week "should I wait" answer needs a full
+      Stage A re-solve per candidate week, not implemented, expensive).
+      Scored instead against this chip's own LOGGED HISTORY this season
+      (chip_log.csv) — a genuine trend from your real fixtures, not a
+      guess extrapolated from past seasons' gameweek numbers. That
+      extrapolation deliberately isn't attempted: which gameweek has a
+      blank or double is driven by cup replay rules, European competition
+      scheduling and international breaks, all of which have changed
+      structurally between seasons — a past season's GW28 blank says
+      close to nothing about whether THIS season's GW28 will have one.
+      Needs a few weeks of your own logged history first (see
+      MIN_HISTORY_FOR_SCORE); returns score=None with a "not enough
+      history yet" verdict until then, rather than a fake number.
+    """
+    best_bb_w = max(bb, key=bb.get)
+    bb_score = _percentile_score(bb[0], list(bb.values()))
+
+    best_tc_w = max(tc, key=tc.get)
+    tc_score = _percentile_score(tc[0], list(tc.values()))
+
+    wc_hist, fh_hist = load_chip_history(log_path)
+    wc_score = (_percentile_score(wc, wc_hist + [wc])
+                if len(wc_hist) >= MIN_HISTORY_FOR_SCORE else None)
+    fh_score = (_percentile_score(fh, fh_hist + [fh])
+                if len(fh_hist) >= MIN_HISTORY_FOR_SCORE else None)
+
+    return {
+        "bench_boost": {"score": round(bb_score, 1),
+                         "verdict": _horizon_verdict("Bench Boost", bb_score, best_bb_w)},
+        "triple_captain": {"score": round(tc_score, 1),
+                            "verdict": _horizon_verdict("Triple Captain", tc_score, best_tc_w)},
+        "wildcard": {"score": round(wc_score, 1) if wc_score is not None else None,
+                     "verdict": _history_verdict("Wildcard", wc_score, len(wc_hist))},
+        "free_hit": {"score": round(fh_score, 1) if fh_score is not None else None,
+                     "verdict": _history_verdict("Free Hit", fh_score, len(fh_hist))},
+    }
+
+
 def main():
     df, gw = build_table(horizon=opt.OPTIMISE_HORIZON) if opt.OPTIMISE_HORIZON else build_table()
     horizon = horizon_of(df)
@@ -285,6 +398,17 @@ def main():
           f"GW{gw + max(bb, key=bb.get)} (+{max(bb.values()):.2f} pts)")
     print(f"Best week to play Triple Captain (of the next {horizon}): "
           f"GW{gw + max(tc, key=tc.get)} (+{max(tc.values()):.2f} pts)")
+
+    # Scored against PRIOR log history — must happen before log_row below
+    # writes this run's own reading, or a chip would be scored partly
+    # against itself.
+    scores = chip_scores(bb, tc, wc, fh)
+    print("\n=== How good is it to use each chip THIS WEEK? (0-10) ===")
+    for key, label in [("bench_boost", "Bench Boost"), ("triple_captain", "Triple Captain"),
+                        ("wildcard", "Wildcard"), ("free_hit", "Free Hit")]:
+        s = scores[key]["score"]
+        score_str = f"{s}/10" if s is not None else "n/a"
+        print(f"  {label:<15} {score_str:<6} {scores[key]['verdict']}")
 
     log_row(gw, bb, tc, wc, fh, horizon)
     print(f"\nLogged GW{gw}-GW{gw + horizon - 1} readings to {LOG_PATH}. Don't "

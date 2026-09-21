@@ -313,6 +313,20 @@ if st.button("Run optimiser", type="primary"):
                 f"Best week to Triple Captain: GW{gw + best_tc_w} (+{tc[best_tc_w]:.2f} pts). "
                 "Values are for your CURRENT squad, before the transfer above is applied.")
 
+    # Scored against PRIOR log history — computed before log_row below
+    # writes this run's own reading, or wildcard/free hit would be scored
+    # partly against themselves. See chip_scores' docstring for exactly
+    # what each score is (and isn't) measuring.
+    chip_score_data = chips.chip_scores(bb, tc, wc, fh)
+    st.write("**How good is it to use each chip THIS WEEK? (0-10)**")
+    s1, s2, s3, s4 = st.columns(4)
+    for col, key in zip([s1, s2, s3, s4],
+                         ["bench_boost", "triple_captain", "wildcard", "free_hit"]):
+        entry = chip_score_data[key]
+        col.metric(key.replace("_", " ").title(),
+                    f"{entry['score']}/10" if entry["score"] is not None else "n/a")
+        col.caption(entry["verdict"])
+
     with st.expander("Chip detail — week-by-week values and the Free Hit squad"):
         weeks = [f"GW{gw + w}" for w in range(horizon)]
         chart_df = pd.DataFrame({
