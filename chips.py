@@ -92,14 +92,17 @@ def triple_captain_value(df, squad_ids):
 
 
 def _solve_stage_a(df, current_ids, bank_t):
-    prob, squad, start, cap, hits, cost_t, budget_t = opt.build_problem(
+    prob, squad, start, cap, hits, ft, tin, tout, cost_t, budget_t = opt.build_problem(
         df, current_ids, bank_t
     )
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     status = pulp.LpStatus[prob.status]
     if status != "Optimal":
         raise SystemExit(f"Stage A solver returned {status} in chip evaluation.")
-    chosen = [p for p in df["id"] if squad[p].value() > 0.5]
+    # Week 0's squad is the only one that's "real" for this hypothetical —
+    # see build_problem's docstring. Chip valuations only ever compare
+    # week-0 (or horizon-total) outcomes, never a future planned squad.
+    chosen = [p for p in df["id"] if squad[0][p].value() > 0.5]
     return chosen, pulp.value(prob.objective)
 
 
@@ -114,12 +117,11 @@ def wildcard_value(df, current_ids, bank_t):
     finally block so a crash mid-evaluation can't leave your real settings
     silently changed for a later run in the same process.
     """
-    orig = (opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST)
+    orig = (opt.MAX_TRANSFERS, opt.HIT_COST)
     try:
         # Best possible squad if you could freely rebuild, no penalty at all.
         opt.MAX_TRANSFERS = 15
         opt.HIT_COST = 0.0
-        opt.TRANSFER_OPPORTUNITY_COST = 0.0
         _, wildcard_obj = _solve_stage_a(df, current_ids, bank_t)
 
         # Baseline: your current 15, untouched, valued the same honest way
@@ -127,7 +129,7 @@ def wildcard_value(df, current_ids, bank_t):
         opt.MAX_TRANSFERS = 0
         _, frozen_obj = _solve_stage_a(df, current_ids, bank_t)
     finally:
-        opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST = orig
+        opt.MAX_TRANSFERS, opt.HIT_COST = orig
 
     return wildcard_obj - frozen_obj
 
@@ -145,14 +147,13 @@ def free_hit_detail(df, current_ids, bank_t):
     current_xi, current_captain, current_score (your real squad, week 0
     only), plus gain = score - current_score.
     """
-    orig = (opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST)
+    orig = (opt.MAX_TRANSFERS, opt.HIT_COST)
     try:
         opt.MAX_TRANSFERS = 15
         opt.HIT_COST = 0.0
-        opt.TRANSFER_OPPORTUNITY_COST = 0.0
         free_hit_squad, _ = _solve_stage_a(df, current_ids, bank_t)
     finally:
-        opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST = orig
+        opt.MAX_TRANSFERS, opt.HIT_COST = orig
 
     fh_xi, fh_cap = opt.choose_lineup_for_week(df, free_hit_squad, "xw0")
     cur_xi, cur_cap = opt.choose_lineup_for_week(df, current_ids, "xw0")

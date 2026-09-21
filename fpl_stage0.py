@@ -35,9 +35,52 @@ SHRINKAGE_K = 4.0
 # These numbers are guesses. Tuning them against real data is Stage 2's job.
 FDR_MULTIPLIER = {1: 1.25, 2: 1.12, 3: 1.00, 4: 0.88, 5: 0.75}
 
+# Opponent attack/defence strength, home/away-aware, blended in alongside
+# the FDR multiplier above (see opponent_strength_multiplier). Previously
+# this real per-fixture signal (bootstrap-static's strength_attack/
+# defence_home/away, the same fields the ML cold-start path already used)
+# only ever reached players with almost no history this season — everyone
+# else was stuck on FDR's single 1-5 bucket, which doesn't know a fixture
+# against a weak defence is a better attacking chance than a fixture
+# against a merely "medium FDR" strong one that happens to be poor at
+# defending set pieces, or vice versa. Centred so a league-average
+# opponent gives a multiplier of 1.0.
+STRENGTH_BASELINE = 1200
+# Below this, treat a team's strength fields as "not populated yet" (early
+# preseason before FPL has computed a rating for the current season) and
+# fall back to FDR alone for that fixture, rather than dividing by a
+# near-zero number and producing a nonsense multiplier.
+STRENGTH_MIN_VALID = 100
+
 # status codes in the API: a=available, d=doubtful, i=injured,
 # s=suspended, u=unavailable, n=not in squad
 HARD_OUT = {"i", "s", "u", "n"}
+
+# Extra expected points/game for being the team's set-piece taker — goal
+# (penalties) or assist (corners/free-kicks) threat that two otherwise
+# similar-priced teammates can differ on hugely, and which points_per_game
+# already reflects only AFTER the fact (so it's invisible to a player who
+# just inherited the duty, e.g. after a summer signing or an injury to the
+# old taker). *_order fields come straight off the bootstrap API: 1 =
+# primary taker, 2/3 = backup. Order 4+ is treated as no bonus (residual
+# duty, rarely taken).  These figures are hand-picked estimates of the
+# points/game a duty is worth, not fitted — reasonable starting priors,
+# not a claim of precision.
+SET_PIECE_BONUS = {
+    "penalties_order": {1: 1.0, 2: 0.25, 3: 0.05},
+    "direct_freekicks_order": {1: 0.15, 2: 0.05},
+    "corners_and_indirect_freekicks_order": {1: 0.15, 2: 0.05},
+}
+
+# Rotation-risk proxy: blend season-long mins_share with a MORE RECENT
+# window so a player who's fallen out of the XI in the last few
+# gameweeks (rotation, a new signing, returning from injury and being
+# eased back in) gets discounted even while his season total still looks
+# fine — mins_share alone is backward-looking over the WHOLE season and
+# can't see a trend like that.
+USE_RECENT_MINUTES = True
+RECENT_GAMES_WINDOW = 4     # how many of the player's most recent games to look at
+RECENT_MINUTES_WEIGHT = 0.6  # weight on the recent window vs the season-long mins_share
 
 # For players with very little data this season (new signings, promoted-
 # team players, the first couple of gameweeks), use the trained ML model
@@ -69,9 +112,13 @@ def next_gameweek(events):
     return unfinished[0] if unfinished else events[-1]["id"]
 
 
-def fixture_difficulties(fixtures, start_gw, horizon):
+def fixture_details(fixtures, start_gw, horizon):
     """
-    team_id -> list of FDR values for its fixtures in [start_gw, start_gw+horizon).
+    team_id -> list of (fdr, opponent_team_id, was_home) for its fixtures in
+    [start_gw, start_gw+horizon) — the opponent id and venue are what let
+    opponent_strength_multiplier look up the RIGHT strength field (their
+    defence if we're facing an attacker, their attack if we're facing a
+    defender/keeper, home or away).
 
     A team with two fixtures in one gameweek (a double) gets two entries, which
     correctly inflates its players' xPts. A team with none (a blank) gets an
@@ -82,9 +129,77 @@ def fixture_difficulties(fixtures, start_gw, horizon):
     for f in fixtures:
         if f["event"] is None or f["event"] not in window or f["finished"]:
             continue
-        out.setdefault(f["team_h"], []).append(f["team_h_difficulty"])
-        out.setdefault(f["team_a"], []).append(f["team_a_difficulty"])
+        out.setdefault(f["team_h"], []).append((f["team_h_difficulty"], f["team_a"], True))
+        out.setdefault(f["team_a"], []).append((f["team_a_difficulty"], f["team_h"], False))
     return out
+
+
+def team_strength_dict(teams):
+    """team_id -> {attack_home, attack_away, defence_home, defence_away},
+    straight off bootstrap-static's 'teams' list (same fields ml_predict.py
+    already uses for cold-start players via team_strength_from_boot)."""
+    out = {}
+    for t in teams:
+        out[t["id"]] = {
+            "attack_home": t.get("strength_attack_home"),
+            "attack_away": t.get("strength_attack_away"),
+            "defence_home": t.get("strength_defence_home"),
+            "defence_away": t.get("strength_defence_away"),
+        }
+    return out
+
+
+def opponent_strength_multiplier(pos, opp_strength, was_home):
+    """
+    >1.0 = easier-than-average fixture for a player in this position,
+    <1.0 = harder. Attackers (MID/FWD) care about the opponent's DEFENCE
+    rating (a weak defence is a better scoring chance); defenders/keepers
+    care about the opponent's ATTACK rating (a weak attack is a better
+    clean-sheet chance).
+
+    Returns None — not a degenerate multiplier — when the relevant field
+    is missing or not yet populated for this season (see
+    STRENGTH_MIN_VALID), so the caller can fall back to FDR alone instead
+    of dividing by a near-zero number.
+    """
+    if opp_strength is None:
+        return None
+    field = ("defence_away" if was_home else "defence_home") if pos in ("MID", "FWD") \
+        else ("attack_away" if was_home else "attack_home")
+    relevant = opp_strength.get(field)
+    if not relevant or relevant < STRENGTH_MIN_VALID:
+        return None
+    return STRENGTH_BASELINE / relevant
+
+
+def week_fixture_scores(weekly_details, team_strength):
+    """
+    team_id -> (attack_role_score, defence_role_score) summed over one
+    week's fixtures for that team (0 fixtures = blank = 0, 2 fixtures = a
+    double = roughly double). attack_role_score is what MID/FWD players
+    use; defence_role_score is what GKP/DEF players use — see
+    opponent_strength_multiplier for why they differ.
+
+    Each fixture blends the official FDR multiplier with the real
+    opponent-strength multiplier 50/50 when strength data is populated
+    this season, and falls back to FDR alone (weight 1.0) when it isn't —
+    see opponent_strength_multiplier's None case. Blending rather than
+    replacing FDR outright means a bad/stale strength number can only
+    ever pull the score halfway off FDR's own estimate, not override it.
+    """
+    attack_role, defence_role = {}, {}
+    for team_id, entries in weekly_details.items():
+        a_total = d_total = 0.0
+        for fdr, opp_id, was_home in entries:
+            fdr_mult = FDR_MULTIPLIER.get(fdr, 1.0)
+            opp = team_strength.get(opp_id)
+            a_mult = opponent_strength_multiplier("MID", opp, was_home)
+            d_mult = opponent_strength_multiplier("DEF", opp, was_home)
+            a_total += fdr_mult if a_mult is None else 0.5 * (fdr_mult + a_mult)
+            d_total += fdr_mult if d_mult is None else 0.5 * (fdr_mult + d_mult)
+        attack_role[team_id] = a_total
+        defence_role[team_id] = d_total
+    return attack_role, defence_role
 
 
 def availability(row):
@@ -100,6 +215,39 @@ def availability(row):
     if pd.isna(chance):
         return 1.0
     return chance / 100.0
+
+
+def set_piece_bonus(df):
+    """Per-player flat points/game bonus for known penalty/free-kick/corner
+    duty (see SET_PIECE_BONUS above). Missing columns (e.g. a synthetic
+    test DataFrame that doesn't include them) contribute nothing rather
+    than raising — this is a bonus on top of the heuristic, never a
+    requirement of it."""
+    bonus = pd.Series(0.0, index=df.index)
+    for col, table in SET_PIECE_BONUS.items():
+        if col not in df.columns:
+            continue
+        orders = pd.to_numeric(df[col], errors="coerce")
+        for order, pts in table.items():
+            bonus = bonus + np.where(orders == order, pts, 0.0)
+    return bonus
+
+
+def recent_mins_share(element_ids, histories, n=RECENT_GAMES_WINDOW):
+    """id -> average minutes/90 over that player's last `n` played games,
+    from the same real gameweek history ml_predict.py already fetches and
+    caches (element-summary/{id}/) — no extra API calls beyond what
+    USE_ML_COLD_START was already making. A player missing from
+    `histories`, or with no games in it yet, is simply left out of the
+    result — callers must fall back to season-long mins_share for them."""
+    out = {}
+    for pid in element_ids:
+        hist = histories.get(str(pid)) or histories.get(pid)
+        if not hist:
+            continue
+        recent = hist[-n:]
+        out[pid] = sum(h.get("minutes", 0) for h in recent) / (90.0 * len(recent))
+    return out
 
 
 def shrink_ppg(df, k=SHRINKAGE_K):
@@ -169,7 +317,8 @@ def build_table(horizon=HORIZON):
     # window. This is what lets the optimiser plan around a specific blank or
     # double instead of averaging it into a single number and losing exactly
     # the information that made it worth planning around.
-    weekly_fdr = [fixture_difficulties(fixtures, gw + w, 1) for w in range(horizon)]
+    weekly_details = [fixture_details(fixtures, gw + w, 1) for w in range(horizon)]
+    team_strength = team_strength_dict(boot["teams"])
 
     teams = {t["id"]: t["short_name"] for t in boot["teams"]}
     positions = {p["id"]: p["singular_name_short"] for p in boot["element_types"]}
@@ -188,23 +337,54 @@ def build_table(horizon=HORIZON):
     # Share of available minutes the player has actually been on the pitch for.
     # Crude proxy for "will he start". Capped at 1.
     df["mins_share"] = (df["minutes"] / (90 * gws_played)).clip(upper=1.0)
+    df["mins_share_season"] = df["mins_share"]   # kept for comparison/debugging
 
     df["avail"] = df.apply(availability, axis=1)
+
+    # Fetched once, reused below both for the recent-minutes blend and (if
+    # enabled) the ML cold-start section further down — same cache file, so
+    # this costs nothing extra beyond what USE_ML_COLD_START was already
+    # fetching, and nothing here breaks build_table() if it fails (no
+    # trained model / no network yet): stays on the pure season-long
+    # mins_share instead.
+    histories = None
+    if USE_RECENT_MINUTES or USE_ML_COLD_START:
+        try:
+            import ml_predict
+            histories = ml_predict.fetch_current_histories(df["id"].tolist())
+        except Exception as e:
+            print(f"[fpl_stage0] player history fetch skipped: {e}")
+
+    if USE_RECENT_MINUTES and histories:
+        recent = recent_mins_share(df["id"].tolist(), histories)
+        df["recent_mins_share"] = df["id"].map(recent)
+        has_recent = df["recent_mins_share"].notna()
+        df.loc[has_recent, "mins_share"] = (
+            RECENT_MINUTES_WEIGHT * df.loc[has_recent, "recent_mins_share"].clip(upper=1.0)
+            + (1 - RECENT_MINUTES_WEIGHT) * df.loc[has_recent, "mins_share_season"]
+        )
+
+    df["set_piece_bonus"] = set_piece_bonus(df)
 
     # One xw{w} column per week in the horizon — xw0 is next gameweek, xw1
     # the one after, etc. A blank week gives that player xw{w}=0 for that
     # week specifically (not the whole horizon); a double gives it roughly
-    # double. ppg_shrunk/mins_share/avail are treated as constant across the
-    # horizon (we don't have a way to predict THEIR future changes) — only
-    # the fixture term varies week to week, which is exactly the part that's
-    # actually known in advance.
+    # double. ppg_shrunk/mins_share/avail/set_piece_bonus are treated as
+    # constant across the horizon (we don't have a way to predict THEIR
+    # future changes) — only the fixture term varies week to week, which is
+    # exactly the part that's actually known in advance. The fixture term
+    # itself now blends the official FDR bucket with each fixture's real
+    # opponent attack/defence rating (position- and venue-aware) instead of
+    # FDR alone — see week_fixture_scores.
     fdr_scores = []
+    is_attacker = df["pos"].isin(["MID", "FWD"])
     for w in range(horizon):
-        s = df["team"].map(
-            lambda t, w=w: sum(FDR_MULTIPLIER.get(d, 1.0) for d in weekly_fdr[w].get(t, []))
-        ).fillna(0)
+        attack_role, defence_role = week_fixture_scores(weekly_details[w], team_strength)
+        s_attack = df["team"].map(attack_role).fillna(0)
+        s_defence = df["team"].map(defence_role).fillna(0)
+        s = s_attack.where(is_attacker, s_defence)
         fdr_scores.append(s)
-        df[f"xw{w}"] = df["ppg_shrunk"] * df["mins_share"] * df["avail"] * s
+        df[f"xw{w}"] = (df["ppg_shrunk"] + df["set_piece_bonus"]) * df["mins_share"] * df["avail"] * s
 
     # Everyone starts out attributed to the heuristic; cold-start players
     # get their xw{w} columns OVERWRITTEN below if ML blending succeeds.
@@ -220,8 +400,11 @@ def build_table(horizon=HORIZON):
             # fpl_stage0 itself has finished loading, breaks the cycle.
             import ml_predict
 
-            element_ids = df["id"].tolist()
-            histories = ml_predict.fetch_current_histories(element_ids)
+            # Reuse the histories fetched above (for the recent-minutes
+            # blend) if that already happened; only fetch here if it
+            # didn't (e.g. USE_RECENT_MINUTES was off), same cache either way.
+            if histories is None:
+                histories = ml_predict.fetch_current_histories(df["id"].tolist())
             ml_preds = ml_predict.predict_cold_start(boot, fixtures, histories, gw, horizon)
 
             if not ml_preds.empty:
@@ -284,7 +467,8 @@ def report(df, gw):
     print(f"\nNext gameweek: GW{gw}   Horizon: {horizon_of(df)} GWs\n")
 
     cols = ["name", "team_name", "price", "ppg", "ppg_shrunk", "mins_share",
-            "avail", "fixture_score", "xpts", "xpts_gw1", "xpts_per_m", "xpts_source"]
+            "set_piece_bonus", "avail", "fixture_score", "xpts", "xpts_gw1",
+            "xpts_per_m", "xpts_source"]
 
     for pos in ["GKP", "DEF", "MID", "FWD"]:
         sub = df[(df["pos"] == pos) & (df["xpts"] > 0)]

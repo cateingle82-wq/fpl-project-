@@ -52,15 +52,12 @@ st.sidebar.header("Config")
 
 horizon_weeks = st.sidebar.slider(
     "Optimise over (weeks)", min_value=1, max_value=8, value=HORIZON, step=1,
-    help="How many gameweeks ahead Stage A weighs when picking your 15 and "
-         "deciding transfers. This — not Bench weight — is what makes the "
-         "optimiser value bench depth/rotation: with a longer horizon, "
-         "start[w][p] is a free per-week decision for every week in range, "
-         "so a squad with a useful bench player for a later week's fixture "
-         "scores higher than one strong-XI-only squad, purely because more "
-         "weeks of upside are on the table to capture. Set to 1 to optimise "
-         "for just this week (no rotation value at all); raise it to see "
-         "the optimiser start favouring bench depth.",
+    help="How many gameweeks ahead the optimiser plans over — squad, "
+         "starting XI AND transfer timing. With a longer horizon the model "
+         "can genuinely decide to spend only some of your free transfers "
+         "now and bank the rest for a bigger opportunity later, instead of "
+         "always using what's available immediately. Set to 1 and it can "
+         "only ever think about this week (no reason to bank anything).",
 )
 
 team_id = st.sidebar.number_input(
@@ -72,9 +69,13 @@ free_transfers = st.sidebar.number_input(
     "Free transfers", value=int(opt.FREE_TRANSFERS), min_value=0, max_value=15, step=1
 )
 max_transfers = st.sidebar.number_input(
-    "Max transfers this run", value=int(opt.MAX_TRANSFERS), min_value=0, max_value=15, step=1,
-    help="Hard cap on the optimiser. Set to 15 to see a wildcard-style rebuild "
-         "(the Chip Advisor tab does this for you already, though).",
+    "Max transfers in any single week", value=int(opt.MAX_TRANSFERS), min_value=0, max_value=15, step=1,
+    help="A per-week ceiling, not the lever for 'how big a rehaul' — the "
+         "model itself now decides how many of your available transfers to "
+         "actually spend each week, and whether to bank some for later. "
+         "This just stops it proposing an unrealistic same-week rebuild; "
+         "the Chip Advisor tab already evaluates a true wildcard/free hit "
+         "separately.",
 )
 # Every value= below is explicitly cast to float, even though the config
 # block in fpl_optimise.py "should" already hold floats — Streamlit's
@@ -85,11 +86,6 @@ max_transfers = st.sidebar.number_input(
 hit_cost = st.sidebar.number_input(
     "Hit cost (pts per extra transfer)", value=float(opt.HIT_COST), step=0.5
 )
-opportunity_cost = st.sidebar.number_input(
-    "Transfer opportunity cost", value=float(opt.TRANSFER_OPPORTUNITY_COST), step=0.25,
-    help="Higher = more conservative; only clearly-worthwhile transfers get made.",
-)
-bench_weight = st.sidebar.slider("Bench weight", 0.0, 1.0, float(opt.BENCH_WEIGHT), step=0.05)
 ban_unavailable = st.sidebar.checkbox("Don't buy flagged/injured players", value=opt.BAN_UNAVAILABLE)
 
 manual_squad_input = st.sidebar.text_input(
@@ -112,21 +108,32 @@ def apply_config():
     opt.FREE_TRANSFERS = int(free_transfers)
     opt.MAX_TRANSFERS = int(max_transfers)
     opt.HIT_COST = float(hit_cost)
-    opt.TRANSFER_OPPORTUNITY_COST = float(opportunity_cost)
-    opt.BENCH_WEIGHT = float(bench_weight)
     opt.BAN_UNAVAILABLE = bool(ban_unavailable)
 
 
-def get_current_squad(df, gw):
-    """Manual squad box wins if filled in; otherwise fetch live picks."""
+def get_current_squad_and_bank(df, gw):
+    """Manual squad box wins if filled in — bank then comes from the
+    sidebar field, since there's no live account to read it from. Live
+    squad fetch also pulls the REAL bank FPL tracks for that team
+    (entry_history.bank) and uses that in place of the sidebar's Bank
+    field, so it self-updates every week (past transfers, real price
+    moves) instead of relying on you to type in the right number each
+    time you re-run this."""
     if manual_squad_input.strip():
         ids = [int(x) for x in manual_squad_input.split(",") if x.strip()]
+        bank_t = int(round(opt.BANK * 10))
     else:
-        ids = opt.fetch_squad(opt.TEAM_ID, gw)
+        ids, live_bank_t = opt.fetch_squad_and_bank(opt.TEAM_ID, gw)
+        if live_bank_t is not None:
+            bank_t = live_bank_t
+            st.caption(f"Bank auto-fetched from your team: £{bank_t / 10:.1f}m "
+                       "(overrides the sidebar Bank field).")
+        else:
+            bank_t = int(round(opt.BANK * 10))
     if len(ids) != 15:
         st.error(f"Expected 15 players, got {len(ids)}.")
         st.stop()
-    return ids
+    return ids, bank_t
 
 
 def player_row(info, p, xpts_col="xpts", tag=""):
@@ -152,11 +159,10 @@ with tab_transfers:
         apply_config()
         df, gw = get_data(horizon_weeks)
         horizon = horizon_of(df)
-        current_ids = get_current_squad(df, gw)
-        bank_t = int(round(opt.BANK * 10))
+        current_ids, bank_t = get_current_squad_and_bank(df, gw)
 
-        with st.spinner("Solving Stage A (squad/transfers)..."):
-            prob, squad, start, cap, hits, cost_t, budget_t = opt.build_problem(
+        with st.spinner("Solving Stage A (full multi-week squad + transfer plan)..."):
+            prob, squad, start, cap, hits, ft, tin, tout, cost_t, budget_t = opt.build_problem(
                 df, current_ids, bank_t
             )
             prob.solve(pulp.PULP_CBC_CMD(msg=False))
@@ -166,7 +172,10 @@ with tab_transfers:
                       "probably makes a legal squad impossible.")
             st.stop()
 
-        chosen = [p for p in df["id"] if squad[p].value() > 0.5]
+        # Only week 0 is real — everything from week 1 on is the model's own
+        # best guess at what it WOULD do next, shown below so you can see
+        # WHY it's making week 0's decision the way it is, not a commitment.
+        chosen = [p for p in df["id"] if squad[0][p].value() > 0.5]
         xi, captain = opt.choose_lineup(df, chosen)
         info = df.set_index("id")
 
@@ -183,7 +192,7 @@ with tab_transfers:
         if not in_ids:
             st.info("Recommendation: no transfer. Roll it.")
         else:
-            n_hits = int(round(hits.value()))
+            n_hits = int(round(hits[0].value()))
             st.success(f"Recommendation: {len(in_ids)} transfer(s), {n_hits} hit(s) "
                         f"= -{n_hits * int(opt.HIT_COST)} pts")
             c1, c2 = st.columns(2)
@@ -196,47 +205,94 @@ with tab_transfers:
                 st.dataframe(pd.DataFrame([player_row(info, p) for p in in_ids]),
                               hide_index=True, use_container_width=True)
 
-        # --- Multi-week lineup plan --------------------------------------
-        # Each week's XI/bench/captain is its OWN independent solve against
-        # that week's xw{w} — this is what actually captures "start a
-        # bench player because THEIR fixture is good this week, not the
-        # regulars'": start[w][p] for each week is a completely free
-        # decision already (that's the whole point of the per-week horizon
-        # in build_problem), so a great week-3 fixture for a normally-benched
-        # player already gets them started in week 3 specifically. This
-        # section just makes that visible — it was always happening inside
-        # Stage A's valuation, nothing new is being computed for week 0
-        # (choose_lineup_for_week IS Stage B, same as the recommendation
-        # above), only weeks 1-3 are newly surfaced here.
-        n_weeks_to_show = horizon
-        st.write(f"**Lineup plan — all {n_weeks_to_show} week(s) of the horizon**")
-        st.caption("Each tab is solved independently for that week's fixtures. Compare "
-                    "tabs to see rotation: a player benched one week and started the next "
-                    "is the optimiser reacting to THEIR fixture, not a mistake. This is "
-                    "exactly why a longer horizon values bench depth more.")
+        n_used_now = len(in_ids)
+        n_banked = opt.FREE_TRANSFERS - n_used_now
+        if horizon > 1 and n_banked > 0:
+            st.caption(f"Using {n_used_now} of your {opt.FREE_TRANSFERS} free transfer(s) "
+                        f"this week — banking {n_banked} for later (see the week-by-week "
+                        f"plan below for when it thinks that pays off). This is the model's "
+                        f"own decision now, not a hand-tuned setting.")
+
+        # --- Per-week squad/XI/captain, solved once and reused below for
+        # both the expected-points chart and the per-week tabs — avoids
+        # reading the same pulp variables twice and risking the two views
+        # drifting apart.
+        week_data = {}
+        for w in range(horizon):
+            if w == 0:
+                squad_w, xi_w, cap_w = chosen, xi, captain   # already solved above
+            else:
+                squad_w = [p for p in df["id"] if squad[w][p].value() > 0.5]
+                xi_w = [p for p in squad_w if start[w][p].value() > 0.5]
+                cap_w = next(p for p in squad_w if cap[w][p].value() > 0.5)
+            week_data[w] = (squad_w, xi_w, cap_w)
+
+        # --- Expected points per gameweek -----------------------------------
+        # Starting XI's xPts for that week, with the captain's counted twice
+        # (the actual scoring rule) — i.e. what the plan expects to SCORE
+        # each week, not the horizon-wide objective value shown above.
+        weekly_pts = []
+        for w in range(horizon):
+            squad_w, xi_w, cap_w = week_data[w]
+            xpts_col = f"xw{w}"
+            weekly_pts.append(
+                sum(info.loc[p, xpts_col] for p in xi_w) + info.loc[cap_w, xpts_col]
+            )
+        st.write("**Expected points per gameweek**")
+        st.caption("Starting XI's expected points each week, captain counted twice. "
+                    "Weeks 1+ assume the model's own planned transfers/rotation happen.")
+        gw_labels = [f"GW{gw + w}" for w in range(horizon)]
+        pts_df = pd.DataFrame({"GW": gw_labels, "Expected points": weekly_pts})
+        # st.bar_chart sorts string categories alphabetically (GW10 would
+        # sort before GW6) — an explicit Altair chart with sort=gw_labels
+        # keeps the weeks in the actual chronological order instead.
+        import altair as alt
+        chart = alt.Chart(pts_df).mark_bar().encode(
+            x=alt.X("GW:N", sort=gw_labels, title=None),
+            y=alt.Y("Expected points:Q"),
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+        # --- Multi-week plan ------------------------------------------------
+        # Weeks 1+ now come straight from Stage A's own multi-period solve
+        # (squad[w]/start[w]/cap[w]) instead of a separate re-solve against
+        # a FIXED squad — this is what actually shows the model's planned
+        # transfers, not just bench/XI rotation within one unchanging 15.
+        # Only week 0 is real (see build_problem's docstring); everything
+        # from week 1 on is "what it would do given no new information",
+        # shown so you can see WHY it made week 0's call, and WHEN it's
+        # planning to use the rest of your transfers.
+        st.write(f"**Plan — all {horizon} week(s) of the horizon**")
+        st.caption("Each tab reflects the solver's own plan for that week, including any "
+                    "further transfers it wants to make. Only THIS WEEK's transfer (above) "
+                    "is real — re-run fresh next week once actual news comes in.")
 
         order = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
-        week_tabs = st.tabs([f"GW{gw + w}" for w in range(n_weeks_to_show)])
-        prev_xi = None
+        week_tabs = st.tabs([f"GW{gw + w}" for w in range(horizon)])
+        prev_squad, prev_xi = None, None
         for w, wtab in enumerate(week_tabs):
             with wtab:
                 xpts_col = f"xw{w}"
-                if w == 0:
-                    xi_w, cap_w = xi, captain   # already solved above, don't re-solve
-                else:
-                    xi_w, cap_w = opt.choose_lineup_for_week(df, chosen, xpts_col, tiebreak_col="xpts")
-                bench_w = [p for p in chosen if p not in xi_w]
+                squad_w, xi_w, cap_w = week_data[w]
+                bench_w = [p for p in squad_w if p not in xi_w]
 
-                if prev_xi is not None:
-                    rotated_in = set(xi_w) - set(prev_xi)
-                    rotated_out = set(prev_xi) - set(xi_w)
+                if prev_squad is not None:
+                    transferred_in = set(squad_w) - set(prev_squad)
+                    transferred_out = set(prev_squad) - set(squad_w)
+                    if transferred_in or transferred_out:
+                        in_names = ", ".join(info.loc[p, "name"] for p in transferred_in) or "—"
+                        out_names = ", ".join(info.loc[p, "name"] for p in transferred_out) or "—"
+                        st.caption(f"📋 Planned transfer from GW{gw + w - 1}: "
+                                    f"IN {in_names}  |  OUT {out_names}")
+                    rotated_in = (set(xi_w) - set(prev_xi)) - transferred_in
+                    rotated_out = (set(prev_xi) - set(xi_w)) - transferred_out
                     if rotated_in or rotated_out:
                         in_names = ", ".join(info.loc[p, "name"] for p in rotated_in) or "—"
                         out_names = ", ".join(info.loc[p, "name"] for p in rotated_out) or "—"
-                        st.caption(f"Changes from GW{gw + w - 1}: IN {in_names}  |  OUT {out_names}")
-                    else:
-                        st.caption("Same XI as the previous week.")
-                prev_xi = xi_w
+                        st.caption(f"Lineup change from GW{gw + w - 1}: IN {in_names}  |  OUT {out_names}")
+                    elif not (transferred_in or transferred_out):
+                        st.caption("No change from the previous week.")
+                prev_squad, prev_xi = squad_w, xi_w
 
                 xi_sorted = sorted(xi_w, key=lambda p: (order[info.loc[p, "pos"]], -info.loc[p, xpts_col]))
                 st.dataframe(
@@ -254,25 +310,6 @@ with tab_transfers:
         spend = sum(cost_t[p] for p in chosen)
         st.caption(f"Squad cost £{spend / 10:.1f}m of £{budget_t / 10:.1f}m available "
                     f"(£{(budget_t - spend) / 10:.1f}m left in the bank)")
-
-        with st.expander(
-            "Look-ahead — captain for every horizon week in one table, plus a "
-            "blank-fixture sanity check (a compact summary of the tabs above)"
-        ):
-            rows = []
-            for w in range(1, horizon):
-                captain_w = next((p for p in chosen if cap[w][p].value() > 0.5), None)
-                starters_w = [p for p in chosen if start[w][p].value() > 0.5]
-                blanking = [
-                    p for p in starters_w
-                    if info.loc[p, f"xw{w}"] == 0 and info.loc[p, "mins_share"] > 0.3
-                ]
-                rows.append({
-                    "GW": gw + w,
-                    "Captain": info.loc[captain_w, "name"] if captain_w else "?",
-                    "Started despite no fixture": ", ".join(info.loc[p, "name"] for p in blanking) or "—",
-                })
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
     else:
         st.caption("Set your config in the sidebar, then click **Run optimiser**.")
 
@@ -287,8 +324,7 @@ with tab_chips:
         apply_config()
         df, gw = get_data(horizon_weeks)
         horizon = horizon_of(df)
-        current_ids = get_current_squad(df, gw)
-        bank_t = int(round(opt.BANK * 10))
+        current_ids, bank_t = get_current_squad_and_bank(df, gw)
         info = df.set_index("id")
 
         with st.spinner("Evaluating bench boost / triple captain..."):
@@ -305,9 +341,19 @@ with tab_chips:
             "GW": weeks,
             "Bench Boost": [bb[w] for w in range(horizon)],
             "Triple Captain": [tc[w] for w in range(horizon)],
-        }).set_index("GW")
+        })
         st.write("**Bench Boost & Triple Captain — value by week**")
-        st.bar_chart(chart_df)
+        # Same alphabetical-sort issue as the Expected Points chart (GW10
+        # would sort before GW6) — melt to long form and pin x-axis order
+        # explicitly via sort=weeks.
+        import altair as alt
+        long_df = chart_df.melt("GW", var_name="Chip", value_name="Points")
+        chip_chart = alt.Chart(long_df).mark_bar().encode(
+            x=alt.X("GW:N", sort=weeks, title=None),
+            y=alt.Y("Points:Q"),
+            color="Chip:N",
+        )
+        st.altair_chart(chip_chart, use_container_width=True)
 
         c1, c2 = st.columns(2)
         c1.metric(f"Wildcard (over {horizon} GWs)", f"+{wc:.2f} pts")

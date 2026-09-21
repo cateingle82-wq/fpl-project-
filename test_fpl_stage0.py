@@ -102,6 +102,10 @@ def test_ml_unavailable_falls_back_cleanly(monkeypatch, capsys):
 def test_ml_disabled_flag_skips_entirely(monkeypatch):
     monkeypatch.setattr(fs0, "get", fake_get)
     monkeypatch.setattr(fs0, "USE_ML_COLD_START", False)
+    # USE_RECENT_MINUTES fetches histories independently of the ML flag
+    # (see fpl_stage0.py), so this still needs mocking here to avoid a
+    # real network call in this test.
+    monkeypatch.setattr(mp, "fetch_current_histories", lambda ids, **kw: {})
 
     called = {"predict": False}
     def spy(*a, **kw):

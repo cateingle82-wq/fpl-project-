@@ -15,12 +15,12 @@ def cold_start_squad(df):
     """Use build_problem itself (unlimited budget/transfers) to hand back a
     legal 15-man squad to build chip tests on top of — same trick
     test_optimise.py uses for its own cold-start test."""
-    orig = (opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST)
-    opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST = 15, 0.0, 0.0
+    orig = (opt.MAX_TRANSFERS, opt.HIT_COST, opt.FREE_TRANSFERS)
+    opt.MAX_TRANSFERS, opt.HIT_COST, opt.FREE_TRANSFERS = 15, 0.0, 15
     try:
         r = solve(df, [], 10_000)   # huge bank, empty current squad
     finally:
-        opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST = orig
+        opt.MAX_TRANSFERS, opt.HIT_COST, opt.FREE_TRANSFERS = orig
     return r["chosen"]
 
 
@@ -94,11 +94,11 @@ def test_wildcard_never_worse_than_frozen():
 def test_wildcard_config_restored_after_call():
     df = make_players()
     squad = cold_start_squad(df)
-    before = (opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST)
+    before = (opt.MAX_TRANSFERS, opt.HIT_COST)
     chips.wildcard_value(df, squad, bank_t=0)
-    after = (opt.MAX_TRANSFERS, opt.HIT_COST, opt.TRANSFER_OPPORTUNITY_COST)
+    after = (opt.MAX_TRANSFERS, opt.HIT_COST)
     assert before == after, f"config leaked: {before} -> {after}"
-    print("6. wildcard_value restores MAX_TRANSFERS/HIT_COST/opp-cost    OK")
+    print("6. wildcard_value restores MAX_TRANSFERS/HIT_COST             OK")
 
 
 def test_wildcard_large_for_deliberately_bad_squad():
