@@ -265,8 +265,16 @@ if st.button("Run optimiser", type="primary"):
     xi, captain = opt.choose_lineup(df, chosen)
     info = df.set_index("id")
 
-    st.metric("Squad objective (horizon expected points)",
-               f"{pulp.value(prob.objective):.2f}")
+    obj_m, avg_m = st.columns(2)
+    obj_m.metric("Squad objective (horizon expected points)",
+                  f"{pulp.value(prob.objective):.2f}")
+    avg_m.metric("Average per gameweek",
+                  f"{pulp.value(prob.objective) / horizon:.2f}",
+                  help="Objective ÷ horizon length — the total on its own always "
+                       "grows with a longer horizon, so it isn't a fair way to "
+                       "compare two runs with different horizons. This is: "
+                       "run it at 5 weeks, note this number, run it again at 8, "
+                       "and compare THIS instead.")
     st.caption(f"Solved over {horizon} week(s) (slider was set to {horizon_weeks}). "
                 "If you change the slider, you must click **Run optimiser** again — "
                 "moving the slider alone doesn't re-solve anything.")
