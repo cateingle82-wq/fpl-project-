@@ -132,6 +132,7 @@ def _standardize_history_rows(el, hist, position):
             "expected_goals": h.get("expected_goals"),
             "expected_assists": h.get("expected_assists"),
             "value": h["value"], "starts": h.get("starts"),
+            "kickoff_time": h.get("kickoff_time"),
         })
     return rows
 
@@ -166,6 +167,12 @@ def player_base_features(boot, histories, next_gw):
             "expected_goal_involvements": np.nan,
             "expected_goals": np.nan, "expected_assists": np.nan,
             "value": el["now_cost"], "starts": np.nan,
+            # No real date for a generic placeholder — each future week's
+            # ACTUAL fixture kickoff_time is known and used instead (see
+            # predict_cold_start), same treatment as opp_strength/was_home
+            # below, which are also fixture-specific rather than baked
+            # into this once-per-player base.
+            "kickoff_time": None,
         })
 
     combined = pd.DataFrame(real_rows + placeholder_rows)
@@ -177,21 +184,41 @@ def player_base_features(boot, histories, next_gw):
         c for c in mf.FEATURE_COLS if c.endswith(tuple(f"roll{w}" for w in
             list(mf.ROLL_WINDOWS) + [mf.LONG_WINDOW]))
     ]
-    return base[keep]
+    base = base[keep].copy()
+
+    # Last known REAL match date per player, for rest_days — computed from
+    # real_rows directly rather than off the placeholder's own (blank)
+    # kickoff_time. A player with zero real rows gets NaT, which flows
+    # through to rest_days=NaN in predict_cold_start, same "no evidence"
+    # treatment as their NaN rolling features.
+    real_df = pd.DataFrame(real_rows)
+    if not real_df.empty:
+        last_kickoff = pd.to_datetime(
+            real_df["kickoff_time"], errors="coerce", utc=True
+        ).groupby(real_df["player_id"]).max()
+    else:
+        last_kickoff = pd.Series(dtype="datetime64[ns, UTC]")
+    base["last_kickoff"] = last_kickoff.reindex(base.index)
+
+    return base
 
 
 def fixtures_by_team_week(fixtures, start_gw, horizon):
-    """team_id -> {week_offset (0..horizon-1): [(opponent_id, was_home), ...]}.
-    A team with two entries for one week is a double gameweek (both kept,
-    predicted and summed separately); zero entries is a blank."""
+    """team_id -> {week_offset (0..horizon-1): [(opponent_id, was_home,
+    kickoff_time), ...]}. A team with two entries for one week is a double
+    gameweek (both kept, predicted and summed separately); zero entries is
+    a blank. kickoff_time is carried through (not just used for ordering)
+    so predict_cold_start can compute a real rest_days for each fixture,
+    not just decide the opponent/venue."""
     window = range(start_gw, start_gw + horizon)
     out = {}
     for f in fixtures:
         if f["event"] is None or f["event"] not in window or f["finished"]:
             continue
         w = f["event"] - start_gw
-        out.setdefault(f["team_h"], {}).setdefault(w, []).append((f["team_a"], True))
-        out.setdefault(f["team_a"], {}).setdefault(w, []).append((f["team_h"], False))
+        kt = pd.to_datetime(f.get("kickoff_time"), errors="coerce", utc=True)
+        out.setdefault(f["team_h"], {}).setdefault(w, []).append((f["team_a"], True, kt))
+        out.setdefault(f["team_a"], {}).setdefault(w, []).append((f["team_h"], False, kt))
     return out
 
 
@@ -223,17 +250,28 @@ def predict_cold_start(boot, fixtures, histories, next_gw, horizon,
     for pid, row in eligible.iterrows():
         team_id = row["team_id"]
         team_fixtures = fixmap.get(team_id, {})
+        # Chained across the whole horizon (not reset per week) so a
+        # double gameweek's second fixture correctly sees a short rest
+        # since the FIRST fixture, and week w+1 sees its rest since
+        # whichever fixture was actually last, blank weeks included.
+        running_last = row.get("last_kickoff", pd.NaT)
         for w in range(horizon):
-            matches = team_fixtures.get(w, [])
+            matches = sorted(team_fixtures.get(w, []), key=lambda m: (m[2] is pd.NaT, m[2]))
             if not matches:
                 continue   # blank gameweek for this team -> stays 0.0
             total = 0.0
-            for opp_id, was_home in matches:
+            for opp_id, was_home, kickoff in matches:
                 opp = strength.get(opp_id, {})
                 pred_row = {c: row.get(c, np.nan) for c in feature_cols}
                 pred_row["was_home"] = float(was_home)
                 pred_row["opp_strength_attack"] = opp.get("attack_away" if was_home else "attack_home", np.nan)
                 pred_row["opp_strength_defence"] = opp.get("defence_away" if was_home else "defence_home", np.nan)
+                if pd.notna(running_last) and pd.notna(kickoff):
+                    pred_row["rest_days"] = (kickoff - running_last).total_seconds() / 86400
+                else:
+                    pred_row["rest_days"] = np.nan
+                if pd.notna(kickoff):
+                    running_last = kickoff
                 x = pd.DataFrame([pred_row])[feature_cols]
                 pred = float(model.predict(x)[0])
                 total += max(0.0, pred)   # expected points shouldn't go negative

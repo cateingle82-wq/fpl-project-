@@ -9,10 +9,15 @@ import ml_features as mf
 
 def make_toy_rows():
     """One player, one season, 6 gameweeks, hand-picked scores so the
-    correct rolling average is easy to compute by hand and check against."""
+    correct rolling average is easy to compute by hand and check against.
+    Kickoff dates are 7 days apart except gw3, which is only 3 days after
+    gw2 (a midweek fixture) — deliberately so rest_days has a case that
+    isn't just "always 7"."""
     pts = [2, 10, 4, 6, 8, 0]   # gw1..gw6
+    kickoffs = ["2021-08-14", "2021-08-21", "2021-08-24",
+                "2021-08-31", "2021-09-07", "2021-09-14"]
     rows = []
-    for gw, p in enumerate(pts, start=1):
+    for gw, p, kt in zip(range(1, 7), pts, kickoffs):
         rows.append({
             "player_id": 1, "season": "toy", "gw": gw, "position": "MID",
             "team_id": 1, "opponent_id": 2, "was_home": gw % 2 == 0,
@@ -21,7 +26,7 @@ def make_toy_rows():
             "bps": p * 3, "bonus": 0,
             "expected_goal_involvements": 0.1 * p,
             "expected_goals": 0.06 * p, "expected_assists": 0.04 * p,
-            "value": 55, "starts": 1,
+            "value": 55, "starts": 1, "kickoff_time": kt,
         })
     return pd.DataFrame(rows)
 
@@ -128,6 +133,16 @@ def test_missing_xg_column_degrades_gracefully():
     print("8. an all-NaN xG column doesn't break the other features        OK")
 
 
+def test_rest_days_computed_from_kickoff_gaps():
+    """gw3 is 3 days after gw2's kickoff (a midweek fixture); every other
+    gap in make_toy_rows is 7 days. gw1 has no prior match -> NaN."""
+    df = mf.build_features(make_toy_rows(), TEAM_STRENGTH)
+    assert pd.isna(df[df["gw"] == 1].iloc[0]["rest_days"])
+    assert df[df["gw"] == 3].iloc[0]["rest_days"] == 3
+    assert df[df["gw"] == 4].iloc[0]["rest_days"] == 7
+    print("9. rest_days matches the actual gap between kickoff dates       OK")
+
+
 def test_all_feature_columns_present():
     df = mf.build_features(make_toy_rows(), TEAM_STRENGTH)
     missing = [c for c in mf.FEATURE_COLS if c not in df.columns]
@@ -144,5 +159,6 @@ if __name__ == "__main__":
     test_opponent_strength_picks_the_right_venue()
     test_position_and_was_home_encoded_numerically()
     test_missing_xg_column_degrades_gracefully()
+    test_rest_days_computed_from_kickoff_gaps()
     test_all_feature_columns_present()
     print("\nAll checks passed.")

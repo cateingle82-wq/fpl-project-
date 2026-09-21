@@ -18,7 +18,7 @@ the source:
     player_id, season, gw, position, team_id, opponent_id, was_home,
     total_points, minutes, ict_index, influence, creativity, threat,
     bps, bonus, expected_goal_involvements, expected_goals,
-    expected_assists, value, starts
+    expected_assists, value, starts, kickoff_time
 
 `expected_goal_involvements`/`expected_goals`/`expected_assists` may be
 all-NaN (older seasons didn't track xG) — every rolling feature built
@@ -61,7 +61,7 @@ LONG_ROLLED_STATS = ("total_points", "minutes", "starts")
 
 FEATURE_COLS = [
     "position", "was_home", "value",
-    "games_so_far",
+    "games_so_far", "rest_days",
     "opp_strength_attack", "opp_strength_defence",
 ] + [
     f"{stat}_roll{w}" for stat in ROLLED_STATS for w in ROLL_WINDOWS
@@ -135,6 +135,29 @@ def add_rolling_form(df):
     return df
 
 
+def add_rest_days(df):
+    """
+    Days since this player's previous match in the SAME season — a
+    fixture-congestion / rotation-risk signal a manager acts on (a 3-day
+    turnaround from a midweek European game makes a rest more likely than
+    after a full week off). Uses each row's OWN kickoff_time, not a lagged
+    one — that's not leakage, a fixture's scheduled date is known well
+    before it's played, unlike the match's result. Only the PREVIOUS
+    match's date is looked up (shift(1)), so a player's first match of a
+    season gets NaN (no prior match to diff against) — same "no fabricated
+    prior form" rule as every other rolling feature here.
+    """
+    # Sorted the same way add_rolling_form sorts — shift(1) is only "the
+    # previous match" if rows are in gameweek order within each player's
+    # season, and this function doesn't assume its caller already sorted.
+    df = df.sort_values(["season", "player_id", "gw"]).copy()
+    df["kickoff_time"] = pd.to_datetime(df["kickoff_time"], errors="coerce", utc=True)
+    group = df.groupby(["season", "player_id"], group_keys=False)
+    prev_kickoff = group["kickoff_time"].transform(lambda s: s.shift(1))
+    df["rest_days"] = (df["kickoff_time"] - prev_kickoff).dt.total_seconds() / 86400
+    return df
+
+
 def build_features(df, team_strength_by_season):
     """
     df: standardized long-format rows (see module docstring for schema).
@@ -147,6 +170,7 @@ def build_features(df, team_strength_by_season):
     callers decide what to train/predict on; this only adds columns.
     """
     df = add_rolling_form(df)
+    df = add_rest_days(df)
     df = add_opponent_strength(df, team_strength_by_season)
 
     # position as a small integer code — HistGradientBoostingRegressor

@@ -126,6 +126,10 @@ def standardize_season(season):
         "value": gws["value"],
         "starts": pd.to_numeric(gws["starts"], errors="coerce")
         if "starts" in gws.columns else pd.Series(float("nan"), index=gws.index),
+        # A fixture's scheduled date, not a match outcome — known well
+        # before kickoff, so using it is not leakage. Feeds ml_features'
+        # rest_days (fixture-congestion / rotation-risk signal).
+        "kickoff_time": gws["kickoff_time"],
     })
 
     return df, {season: strength}
