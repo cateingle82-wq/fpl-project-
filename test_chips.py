@@ -91,6 +91,22 @@ def test_wildcard_never_worse_than_frozen():
     print(f"5. wildcard value is never negative ({wc:.2f})              OK")
 
 
+def test_wildcard_detail_is_internally_consistent():
+    """The detail dict's objective/frozen_objective must actually produce
+    the same gain wildcard_value() reports, and squad must be a real,
+    legal 15 — same discipline as free_hit_detail's own test."""
+    df = make_players()
+    squad = cold_start_squad(df)
+    detail = chips.wildcard_detail(df, squad, bank_t=0)
+
+    assert len(detail["squad"]) == 15
+    assert abs((detail["objective"] - detail["frozen_objective"]) - detail["gain"]) < 1e-6
+
+    wc = chips.wildcard_value(df, squad, bank_t=0)
+    assert abs(detail["gain"] - wc) < 1e-6
+    print("5b. wildcard_detail's objective/frozen_objective match its own gain  OK")
+
+
 def test_wildcard_config_restored_after_call():
     df = make_players()
     squad = cold_start_squad(df)
@@ -291,6 +307,7 @@ if __name__ == "__main__":
     test_triple_captain_matches_manual_captain_score()
     test_triple_captain_picks_highest_scorer_in_double()
     test_wildcard_never_worse_than_frozen()
+    test_wildcard_detail_is_internally_consistent()
     test_wildcard_config_restored_after_call()
     test_wildcard_large_for_deliberately_bad_squad()
     test_free_hit_never_worse_than_playing_current()

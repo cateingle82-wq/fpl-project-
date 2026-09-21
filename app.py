@@ -265,11 +265,11 @@ if st.button("Run optimiser", type="primary"):
     xi, captain = opt.choose_lineup(df, chosen)
     info = df.set_index("id")
 
+    plan_obj = pulp.value(prob.objective)
     obj_m, avg_m = st.columns(2)
-    obj_m.metric("Squad objective (horizon expected points)",
-                  f"{pulp.value(prob.objective):.2f}")
+    obj_m.metric("Squad objective (horizon expected points)", f"{plan_obj:.2f}")
     avg_m.metric("Average per gameweek",
-                  f"{pulp.value(prob.objective) / horizon:.2f}",
+                  f"{plan_obj / horizon:.2f}",
                   help="Objective ÷ horizon length — the total on its own always "
                        "grows with a longer horizon, so it isn't a fair way to "
                        "compare two runs with different horizons. This is: "
@@ -314,9 +314,36 @@ if st.button("Run optimiser", type="primary"):
     with st.spinner("Evaluating chips (bench boost / triple captain / wildcard / free hit)..."):
         bb = chips.bench_boost_value(df, current_ids)
         tc = chips.triple_captain_value(df, current_ids)
-        wc = chips.wildcard_value(df, current_ids, bank_t)
+        wc_detail = chips.wildcard_detail(df, current_ids, bank_t)
         fh_detail = chips.free_hit_detail(df, current_ids, bank_t)
+    wc = wc_detail["gain"]
     fh = fh_detail["gain"]
+
+    # The transfer plan above and Wildcard are solved completely
+    # separately (Wildcard's own gain is measured against a FROZEN squad,
+    # not against the real hit-taking plan) — this is the actual
+    # apples-to-apples check: both are horizon-total objectives from the
+    # same solver, so comparing them directly is valid even though wc
+    # itself isn't. But Wildcard removes BOTH the per-week transfer cap
+    # AND the hit-cost penalty, so it will ALMOST ALWAYS score at least
+    # a little higher than the capped, hit-priced real plan — a bare
+    # "wildcard > plan" check would fire nearly every week regardless of
+    # whether using it now is actually a good idea. Only surfaced once
+    # the gap clears a real bar (a couple of hits' worth), and framed as
+    # "worth weighing", not "you should do this" — the Wildcard score
+    # below (scored against logged history) is the more reliable signal
+    # for actual timing.
+    wildcard_gap = wc_detail["objective"] - plan_obj
+    if wildcard_gap > opt.HIT_COST * 2:
+        st.warning(
+            f"⚠️ A full Wildcard rebuild right now would be worth "
+            f"{wc_detail['objective']:.2f} pts over the horizon, vs {plan_obj:.2f} pts for "
+            f"the transfer plan above — **+{wildcard_gap:.2f} more**, since a wildcard has no "
+            f"per-week transfer cap and no hit cost. Wildcard is structurally unconstrained "
+            f"so it usually beats a capped plan by some margin — that alone isn't a reason "
+            f"to use it, but this gap is unusually large. Worth weighing against the "
+            f"Wildcard score below (scored against your own logged history) before deciding."
+        )
 
     st.write("**Chip strategy this week**")
     best_bb_w, best_tc_w = max(bb, key=bb.get), max(tc, key=tc.get)

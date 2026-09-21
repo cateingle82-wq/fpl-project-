@@ -159,23 +159,32 @@ def _solve_stage_a(df, current_ids, bank_t):
     return chosen, pulp.value(prob.objective)
 
 
-def wildcard_value(df, current_ids, bank_t):
+def wildcard_detail(df, current_ids, bank_t):
     """
-    Points gained, over the full horizon, by rebuilding the whole squad for
-    free right now versus keeping your current 15 untouched.
+    Full working behind the wildcard number, not just the gap — in
+    particular `objective`, the raw horizon-total value of a free full
+    rebuild right now, which is what actually needs comparing against
+    fpl_optimise's own real (hit-taking) recommendation to answer "is it
+    better to take these hits, or just play Wildcard instead" — the gap
+    alone (vs a FROZEN squad baseline) can't answer that, since the real
+    recommended plan already isn't frozen; it's paying for transfers.
 
     Temporarily loosens the transfer constraints to "anything goes, no
     cost", solves, then restores the real config — a wildcard is exactly
     that hypothetical, made real for one solve. Config is restored in a
     finally block so a crash mid-evaluation can't leave your real settings
     silently changed for a later run in the same process.
+
+    Returns a dict: squad (the wildcard rebuild), objective (its
+    horizon-total value), frozen_objective (your current 15, untouched,
+    valued the same honest way), and gain = objective - frozen_objective.
     """
     orig = (opt.MAX_TRANSFERS, opt.HIT_COST)
     try:
         # Best possible squad if you could freely rebuild, no penalty at all.
         opt.MAX_TRANSFERS = 15
         opt.HIT_COST = 0.0
-        _, wildcard_obj = _solve_stage_a(df, current_ids, bank_t)
+        wildcard_squad, wildcard_obj = _solve_stage_a(df, current_ids, bank_t)
 
         # Baseline: your current 15, untouched, valued the same honest way
         # (best per-week lineup + captain for that fixed squad).
@@ -184,7 +193,21 @@ def wildcard_value(df, current_ids, bank_t):
     finally:
         opt.MAX_TRANSFERS, opt.HIT_COST = orig
 
-    return wildcard_obj - frozen_obj
+    return {
+        "squad": wildcard_squad,
+        "objective": wildcard_obj,
+        "frozen_objective": frozen_obj,
+        "gain": wildcard_obj - frozen_obj,
+    }
+
+
+def wildcard_value(df, current_ids, bank_t):
+    """Points gained, over the full horizon, by rebuilding the whole squad
+    for free right now versus keeping your current 15 untouched. Thin
+    wrapper over wildcard_detail — see there for the full working,
+    including the raw `objective` a real (hit-taking) recommendation
+    should actually be compared against."""
+    return wildcard_detail(df, current_ids, bank_t)["gain"]
 
 
 def free_hit_detail(df, current_ids, bank_t):
