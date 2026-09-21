@@ -20,7 +20,7 @@ import streamlit as st
 
 import chips
 import fpl_optimise as opt
-from fpl_stage0 import HORIZON, build_table
+from fpl_stage0 import HORIZON, build_table, horizon_of
 
 st.set_page_config(page_title="FPL Optimiser", layout="wide")
 
@@ -31,14 +31,14 @@ st.set_page_config(page_title="FPL Optimiser", layout="wide")
 # ----------------------------------------------------------------------------
 
 @st.cache_data(show_spinner="Pulling FPL data...")
-def cached_build_table():
-    return build_table()
+def cached_build_table(horizon):
+    return build_table(horizon=horizon)
 
 
-def get_data(force_refresh=False):
+def get_data(horizon, force_refresh=False):
     if force_refresh:
         cached_build_table.clear()
-    return cached_build_table()
+    return cached_build_table(horizon)
 
 
 # ----------------------------------------------------------------------------
@@ -50,25 +50,46 @@ def get_data(force_refresh=False):
 
 st.sidebar.header("Config")
 
+horizon_weeks = st.sidebar.slider(
+    "Optimise over (weeks)", min_value=1, max_value=8, value=HORIZON, step=1,
+    help="How many gameweeks ahead Stage A weighs when picking your 15 and "
+         "deciding transfers. This — not Bench weight — is what makes the "
+         "optimiser value bench depth/rotation: with a longer horizon, "
+         "start[w][p] is a free per-week decision for every week in range, "
+         "so a squad with a useful bench player for a later week's fixture "
+         "scores higher than one strong-XI-only squad, purely because more "
+         "weeks of upside are on the table to capture. Set to 1 to optimise "
+         "for just this week (no rotation value at all); raise it to see "
+         "the optimiser start favouring bench depth.",
+)
+
 team_id = st.sidebar.number_input(
-    "Team ID", value=opt.TEAM_ID, step=1,
+    "Team ID", value=int(opt.TEAM_ID), step=1,
     help="The number in your FPL team's URL.",
 )
-bank = st.sidebar.number_input("Bank (£m)", value=opt.BANK, step=0.1, format="%.1f")
+bank = st.sidebar.number_input("Bank (£m)", value=float(opt.BANK), step=0.1, format="%.1f")
 free_transfers = st.sidebar.number_input(
-    "Free transfers", value=opt.FREE_TRANSFERS, min_value=0, max_value=15, step=1
+    "Free transfers", value=int(opt.FREE_TRANSFERS), min_value=0, max_value=15, step=1
 )
 max_transfers = st.sidebar.number_input(
-    "Max transfers this run", value=opt.MAX_TRANSFERS, min_value=0, max_value=15, step=1,
+    "Max transfers this run", value=int(opt.MAX_TRANSFERS), min_value=0, max_value=15, step=1,
     help="Hard cap on the optimiser. Set to 15 to see a wildcard-style rebuild "
          "(the Chip Advisor tab does this for you already, though).",
 )
-hit_cost = st.sidebar.number_input("Hit cost (pts per extra transfer)", value=opt.HIT_COST, step=0.5)
+# Every value= below is explicitly cast to float, even though the config
+# block in fpl_optimise.py "should" already hold floats — Streamlit's
+# number_input demands value/min_value/max_value/step all share ONE type,
+# and a config value edited by hand as a plain int (e.g. `= 9` instead of
+# `= 9.0`) silently breaks that the moment it meets a float step. Casting
+# here means a config edit can never crash the dashboard over this.
+hit_cost = st.sidebar.number_input(
+    "Hit cost (pts per extra transfer)", value=float(opt.HIT_COST), step=0.5
+)
 opportunity_cost = st.sidebar.number_input(
-    "Transfer opportunity cost", value=opt.TRANSFER_OPPORTUNITY_COST, step=0.25,
+    "Transfer opportunity cost", value=float(opt.TRANSFER_OPPORTUNITY_COST), step=0.25,
     help="Higher = more conservative; only clearly-worthwhile transfers get made.",
 )
-bench_weight = st.sidebar.slider("Bench weight", 0.0, 1.0, opt.BENCH_WEIGHT, step=0.05)
+bench_weight = st.sidebar.slider("Bench weight", 0.0, 1.0, float(opt.BENCH_WEIGHT), step=0.05)
 ban_unavailable = st.sidebar.checkbox("Don't buy flagged/injured players", value=opt.BAN_UNAVAILABLE)
 
 manual_squad_input = st.sidebar.text_input(
@@ -77,7 +98,7 @@ manual_squad_input = st.sidebar.text_input(
 )
 
 if st.sidebar.button("Refresh FPL data", help="Re-pulls bootstrap-static/fixtures from the API."):
-    get_data(force_refresh=True)
+    get_data(horizon_weeks, force_refresh=True)
     st.sidebar.success("Data refreshed.")
 
 
@@ -129,7 +150,8 @@ with tab_transfers:
     st.subheader("Squad, transfers and starting XI")
     if st.button("Run optimiser", type="primary"):
         apply_config()
-        df, gw = get_data()
+        df, gw = get_data(horizon_weeks)
+        horizon = horizon_of(df)
         current_ids = get_current_squad(df, gw)
         bank_t = int(round(opt.BANK * 10))
 
@@ -150,6 +172,9 @@ with tab_transfers:
 
         st.metric("Squad objective (horizon expected points)",
                    f"{pulp.value(prob.objective):.2f}")
+        st.caption(f"Solved over {horizon} week(s) (slider was set to {horizon_weeks}). "
+                    "If you change the slider, you must click **Run optimiser** again — "
+                    "moving the slider alone doesn't re-solve anything.")
 
         current = set(current_ids)
         out_ids = sorted(current - set(chosen), key=lambda p: -info.loc[p, "xpts"])
@@ -171,30 +196,71 @@ with tab_transfers:
                 st.dataframe(pd.DataFrame([player_row(info, p) for p in in_ids]),
                               hide_index=True, use_container_width=True)
 
-        st.write("**Starting XI** — chosen for next gameweek's fixtures only")
-        order = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
-        xi_sorted = sorted(xi, key=lambda p: (order[info.loc[p, "pos"]], -info.loc[p, "xpts_gw1"]))
-        st.dataframe(
-            pd.DataFrame([player_row(info, p, "xpts_gw1", "(C)" if p == captain else "")
-                          for p in xi_sorted]),
-            hide_index=True, use_container_width=True,
-        )
+        # --- Multi-week lineup plan --------------------------------------
+        # Each week's XI/bench/captain is its OWN independent solve against
+        # that week's xw{w} — this is what actually captures "start a
+        # bench player because THEIR fixture is good this week, not the
+        # regulars'": start[w][p] for each week is a completely free
+        # decision already (that's the whole point of the per-week horizon
+        # in build_problem), so a great week-3 fixture for a normally-benched
+        # player already gets them started in week 3 specifically. This
+        # section just makes that visible — it was always happening inside
+        # Stage A's valuation, nothing new is being computed for week 0
+        # (choose_lineup_for_week IS Stage B, same as the recommendation
+        # above), only weeks 1-3 are newly surfaced here.
+        n_weeks_to_show = horizon
+        st.write(f"**Lineup plan — all {n_weeks_to_show} week(s) of the horizon**")
+        st.caption("Each tab is solved independently for that week's fixtures. Compare "
+                    "tabs to see rotation: a player benched one week and started the next "
+                    "is the optimiser reacting to THEIR fixture, not a mistake. This is "
+                    "exactly why a longer horizon values bench depth more.")
 
-        bench = [p for p in chosen if p not in xi]
-        st.write("**Bench**")
-        bench_sorted = sorted(bench, key=lambda p: -info.loc[p, "xpts_gw1"])
-        st.dataframe(
-            pd.DataFrame([player_row(info, p, "xpts_gw1") for p in bench_sorted]),
-            hide_index=True, use_container_width=True,
-        )
+        order = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+        week_tabs = st.tabs([f"GW{gw + w}" for w in range(n_weeks_to_show)])
+        prev_xi = None
+        for w, wtab in enumerate(week_tabs):
+            with wtab:
+                xpts_col = f"xw{w}"
+                if w == 0:
+                    xi_w, cap_w = xi, captain   # already solved above, don't re-solve
+                else:
+                    xi_w, cap_w = opt.choose_lineup_for_week(df, chosen, xpts_col, tiebreak_col="xpts")
+                bench_w = [p for p in chosen if p not in xi_w]
+
+                if prev_xi is not None:
+                    rotated_in = set(xi_w) - set(prev_xi)
+                    rotated_out = set(prev_xi) - set(xi_w)
+                    if rotated_in or rotated_out:
+                        in_names = ", ".join(info.loc[p, "name"] for p in rotated_in) or "—"
+                        out_names = ", ".join(info.loc[p, "name"] for p in rotated_out) or "—"
+                        st.caption(f"Changes from GW{gw + w - 1}: IN {in_names}  |  OUT {out_names}")
+                    else:
+                        st.caption("Same XI as the previous week.")
+                prev_xi = xi_w
+
+                xi_sorted = sorted(xi_w, key=lambda p: (order[info.loc[p, "pos"]], -info.loc[p, xpts_col]))
+                st.dataframe(
+                    pd.DataFrame([player_row(info, p, xpts_col, "(C)" if p == cap_w else "")
+                                  for p in xi_sorted]),
+                    hide_index=True, use_container_width=True,
+                )
+                st.write("Bench")
+                bench_sorted = sorted(bench_w, key=lambda p: -info.loc[p, xpts_col])
+                st.dataframe(
+                    pd.DataFrame([player_row(info, p, xpts_col) for p in bench_sorted]),
+                    hide_index=True, use_container_width=True,
+                )
 
         spend = sum(cost_t[p] for p in chosen)
         st.caption(f"Squad cost £{spend / 10:.1f}m of £{budget_t / 10:.1f}m available "
                     f"(£{(budget_t - spend) / 10:.1f}m left in the bank)")
 
-        with st.expander("Look-ahead — Stage A's internal per-week captain plan"):
+        with st.expander(
+            "Look-ahead — captain for every horizon week in one table, plus a "
+            "blank-fixture sanity check (a compact summary of the tabs above)"
+        ):
             rows = []
-            for w in range(1, HORIZON):
+            for w in range(1, horizon):
                 captain_w = next((p for p in chosen if cap[w][p].value() > 0.5), None)
                 starters_w = [p for p in chosen if start[w][p].value() > 0.5]
                 blanking = [
@@ -219,7 +285,8 @@ with tab_chips:
 
     if st.button("Run chip advisor", type="primary"):
         apply_config()
-        df, gw = get_data()
+        df, gw = get_data(horizon_weeks)
+        horizon = horizon_of(df)
         current_ids = get_current_squad(df, gw)
         bank_t = int(round(opt.BANK * 10))
         info = df.set_index("id")
@@ -232,17 +299,18 @@ with tab_chips:
             fh_detail = chips.free_hit_detail(df, current_ids, bank_t)
         fh = fh_detail["gain"]
 
-        weeks = [f"GW{gw + w}" for w in range(HORIZON)]
+        st.caption(f"Solved over {horizon} week(s) (slider was set to {horizon_weeks}).")
+        weeks = [f"GW{gw + w}" for w in range(horizon)]
         chart_df = pd.DataFrame({
             "GW": weeks,
-            "Bench Boost": [bb[w] for w in range(HORIZON)],
-            "Triple Captain": [tc[w] for w in range(HORIZON)],
+            "Bench Boost": [bb[w] for w in range(horizon)],
+            "Triple Captain": [tc[w] for w in range(horizon)],
         }).set_index("GW")
         st.write("**Bench Boost & Triple Captain — value by week**")
         st.bar_chart(chart_df)
 
         c1, c2 = st.columns(2)
-        c1.metric(f"Wildcard (over {HORIZON} GWs)", f"+{wc:.2f} pts")
+        c1.metric(f"Wildcard (over {horizon} GWs)", f"+{wc:.2f} pts")
         c2.metric(f"Free Hit (GW{gw} only)", f"+{fh:.2f} pts")
 
         best_bb_w = max(bb, key=bb.get)

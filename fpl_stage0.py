@@ -144,7 +144,21 @@ def shrink_ppg(df, k=SHRINKAGE_K):
     return shrunk, prior_col
 
 
-def build_table():
+def build_table(horizon=HORIZON):
+    """
+    horizon: how many gameweeks ahead to plan over. Defaults to the module
+    constant, but callers (the app's sidebar, in particular) can pass a
+    different value — this is the actual knob for "how many weeks should
+    squad selection weigh rotation options over", not BENCH_WEIGHT. A
+    longer horizon doesn't just add more fixture data: build_problem's
+    per-week start[w][p] decisions mean a squad gets rewarded for having
+    players who can rotate in across DIFFERENT weeks' best XIs, and that
+    reward only exists for weeks actually in the horizon. horizon=1 has
+    zero rotation value by construction (there's only one week to be
+    optimal for); horizon=8 rewards genuine squad depth much more than
+    horizon=3 does. BENCH_WEIGHT is a separate, smaller effect — a flat
+    proxy for real-life bench/autosub insurance — not the same knob.
+    """
     boot = get("bootstrap-static/")
     fixtures = get("fixtures/")
 
@@ -155,7 +169,7 @@ def build_table():
     # window. This is what lets the optimiser plan around a specific blank or
     # double instead of averaging it into a single number and losing exactly
     # the information that made it worth planning around.
-    weekly_fdr = [fixture_difficulties(fixtures, gw + w, 1) for w in range(HORIZON)]
+    weekly_fdr = [fixture_difficulties(fixtures, gw + w, 1) for w in range(horizon)]
 
     teams = {t["id"]: t["short_name"] for t in boot["teams"]}
     positions = {p["id"]: p["singular_name_short"] for p in boot["element_types"]}
@@ -185,7 +199,7 @@ def build_table():
     # the fixture term varies week to week, which is exactly the part that's
     # actually known in advance.
     fdr_scores = []
-    for w in range(HORIZON):
+    for w in range(horizon):
         s = df["team"].map(
             lambda t, w=w: sum(FDR_MULTIPLIER.get(d, 1.0) for d in weekly_fdr[w].get(t, []))
         ).fillna(0)
@@ -208,11 +222,11 @@ def build_table():
 
             element_ids = df["id"].tolist()
             histories = ml_predict.fetch_current_histories(element_ids)
-            ml_preds = ml_predict.predict_cold_start(boot, fixtures, histories, gw, HORIZON)
+            ml_preds = ml_predict.predict_cold_start(boot, fixtures, histories, gw, horizon)
 
             if not ml_preds.empty:
                 df = df.set_index("id", drop=False)
-                for w in range(HORIZON):
+                for w in range(horizon):
                     col = f"xw{w}"
                     df.loc[ml_preds.index, col] = ml_preds[col]
                 df.loc[ml_preds.index, "xpts_source"] = "ml"
@@ -229,14 +243,14 @@ def build_table():
     # one source of truth, so they can't drift out of sync with each other.
     df["fixture_score"] = sum(fdr_scores)          # kept for the report() table
     df["fixture_score_gw1"] = fdr_scores[0]
-    df["xpts"] = sum(df[f"xw{w}"] for w in range(HORIZON))
+    df["xpts"] = sum(df[f"xw{w}"] for w in range(horizon))
     df["xpts_gw1"] = df["xw0"]
     df["xpts_per_m"] = df["xpts"] / df["price"]            # value, not just points
 
     # Safety net: NaN/inf here means PuLP will crash three files downstream
     # with an unhelpful error. Catch it here, at the source, with a message
     # that says which players and which column actually broke.
-    check_cols = ["xpts", "xpts_gw1"] + [f"xw{w}" for w in range(HORIZON)]
+    check_cols = ["xpts", "xpts_gw1"] + [f"xw{w}" for w in range(horizon)]
     bad_mask = pd.Series(False, index=df.index)
     for c in check_cols:
         bad_mask |= df[c].isna() | ~df[c].apply(lambda v: v == v and abs(v) != float("inf"))
@@ -251,8 +265,23 @@ def build_table():
     return df, gw
 
 
+def horizon_of(df):
+    """
+    How many per-week xw{w} columns this table actually has — the single
+    source of truth downstream code (build_problem, chips.py) uses to know
+    how many weeks to plan over, instead of assuming the module's HORIZON
+    constant. Inferred from the DataFrame itself so a table built with a
+    custom horizon (e.g. the app's slider) can never silently mismatch
+    code that assumed the default.
+    """
+    weeks = [int(c[2:]) for c in df.columns if c.startswith("xw") and c[2:].isdigit()]
+    if not weeks:
+        raise ValueError("df has no xw{w} columns — was it built by build_table()?")
+    return max(weeks) + 1
+
+
 def report(df, gw):
-    print(f"\nNext gameweek: GW{gw}   Horizon: {HORIZON} GWs\n")
+    print(f"\nNext gameweek: GW{gw}   Horizon: {horizon_of(df)} GWs\n")
 
     cols = ["name", "team_name", "price", "ppg", "ppg_shrunk", "mins_share",
             "avail", "fixture_score", "xpts", "xpts_gw1", "xpts_per_m", "xpts_source"]

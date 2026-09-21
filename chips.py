@@ -46,7 +46,7 @@ from datetime import date, datetime
 import pulp
 
 import fpl_optimise as opt
-from fpl_stage0 import HORIZON, build_table
+from fpl_stage0 import HORIZON, build_table, horizon_of
 
 LOG_PATH = "chip_log.csv"
 
@@ -64,7 +64,7 @@ def bench_boost_value(df, squad_ids):
     Returns {week: value}.
     """
     values = {}
-    for w in range(HORIZON):
+    for w in range(horizon_of(df)):
         xpts_col = f"xw{w}"
         xi, _ = opt.choose_lineup_for_week(df, squad_ids, xpts_col)
         bench = [p for p in squad_ids if p not in xi]
@@ -84,7 +84,7 @@ def triple_captain_value(df, squad_ids):
     """
     values = {}
     info = df.set_index("id")
-    for w in range(HORIZON):
+    for w in range(horizon_of(df)):
         xpts_col = f"xw{w}"
         _, captain = opt.choose_lineup_for_week(df, squad_ids, xpts_col)
         values[w] = info.loc[captain, xpts_col]
@@ -226,7 +226,8 @@ def log_row(gw, bb, tc, wc, fh):
 
 
 def main():
-    df, gw = build_table()
+    df, gw = build_table(horizon=opt.OPTIMISE_HORIZON) if opt.OPTIMISE_HORIZON else build_table()
+    horizon = horizon_of(df)
 
     if opt.MANUAL_SQUAD:
         current_ids = opt.MANUAL_SQUAD
@@ -250,23 +251,23 @@ def main():
           f"applied first — run fpl_optimise.py separately for that decision)\n")
 
     print("BENCH BOOST — bench points you'd gain, by week:")
-    for w in range(HORIZON):
+    for w in range(horizon):
         print(f"  GW{gw + w}: +{bb[w]:.2f} pts")
 
     print("\nTRIPLE CAPTAIN — extra points from x3 instead of x2, by week:")
-    for w in range(HORIZON):
+    for w in range(horizon):
         print(f"  GW{gw + w}: +{tc[w]:.2f} pts")
 
     print(f"\nWILDCARD — horizon points gained by freely rebuilding now "
-          f"vs keeping this squad untouched:\n  +{wc:.2f} pts over {HORIZON} GWs")
+          f"vs keeping this squad untouched:\n  +{wc:.2f} pts over {horizon} GWs")
 
     print(f"\nFREE HIT — points gained THIS WEEK ONLY by a one-week rebuild "
           f"vs playing your current squad:\n  +{fh:.2f} pts for GW{gw}")
     print_free_hit_xi(df, fh_detail)
 
-    print(f"\nBest week to play Bench Boost (of the next {HORIZON}): "
+    print(f"\nBest week to play Bench Boost (of the next {horizon}): "
           f"GW{gw + max(bb, key=bb.get)} (+{max(bb.values()):.2f} pts)")
-    print(f"Best week to play Triple Captain (of the next {HORIZON}): "
+    print(f"Best week to play Triple Captain (of the next {horizon}): "
           f"GW{gw + max(tc, key=tc.get)} (+{max(tc.values()):.2f} pts)")
 
     log_row(gw, bb[0], tc[0], wc, fh)
