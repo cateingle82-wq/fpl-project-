@@ -147,7 +147,7 @@ def test_all_feature_columns_present():
     df = mf.build_features(make_toy_rows(), TEAM_STRENGTH)
     missing = [c for c in mf.FEATURE_COLS if c not in df.columns]
     assert not missing, f"missing columns: {missing}"
-    print("9. every declared FEATURE_COLS column is actually produced      OK")
+    print("10. every declared FEATURE_COLS column is actually produced      OK")
 
 
 if __name__ == "__main__":
