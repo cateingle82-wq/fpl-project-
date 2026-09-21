@@ -249,6 +249,42 @@ def test_chip_scores_history_needs_a_minimum_and_then_ranks():
     print("13. chip_scores needs a history minimum, then ranks correctly      OK")
 
 
+def test_season_outlook_finds_a_double_beyond_the_horizon():
+    """A squad split across two teams: this week (gw6) both teams have one
+    fixture each (2 total); a later week (gw10) team1 alone has three
+    fixtures (a synthetic stand-in for a double/treble) — outside a
+    3-week horizon (gw6-8), so within_horizon must be False and best_gw
+    must correctly find gw10, not just whatever the visible horizon shows."""
+    import pandas as pd
+    df = pd.DataFrame([
+        {"id": 1, "team": 1}, {"id": 2, "team": 1},
+        {"id": 3, "team": 2}, {"id": 4, "team": 2},
+    ])
+    squad_ids = [1, 2, 3, 4]
+    fixtures = [
+        {"event": 6, "team_h": 1, "team_a": 5},
+        {"event": 6, "team_h": 2, "team_a": 6},
+        {"event": 10, "team_h": 1, "team_a": 7},
+        {"event": 10, "team_h": 1, "team_a": 8},
+        {"event": 10, "team_h": 1, "team_a": 9},
+    ]
+    outlook = chips.season_outlook(df, squad_ids, fixtures, gw=6, horizon=3, end_gw=12)
+    assert outlook is not None
+    assert outlook["this_week_fixtures"] == 2
+    assert outlook["best_gw"] == 10
+    assert outlook["best_gw_fixtures"] == 3
+    assert outlook["within_horizon"] is False
+    print("14. season_outlook finds a stronger week beyond the horizon        OK")
+
+
+def test_season_outlook_returns_none_with_nothing_in_range():
+    import pandas as pd
+    df = pd.DataFrame([{"id": 1, "team": 1}])
+    outlook = chips.season_outlook(df, [1], fixtures=[], gw=6, horizon=3, end_gw=12)
+    assert outlook is None
+    print("15. season_outlook returns None when there's nothing to scan       OK")
+
+
 if __name__ == "__main__":
     test_bench_boost_matches_manual_bench_sum()
     test_bench_boost_never_negative()
@@ -263,4 +299,6 @@ if __name__ == "__main__":
     test_log_row_appends()
     test_chip_scores_horizon_picks_the_best_visible_week()
     test_chip_scores_history_needs_a_minimum_and_then_ranks()
+    test_season_outlook_finds_a_double_beyond_the_horizon()
+    test_season_outlook_returns_none_with_nothing_in_range()
     print("\nAll checks passed.")

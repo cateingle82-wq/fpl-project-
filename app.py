@@ -52,6 +52,14 @@ def get_data(horizon, force_refresh=False):
     return cached_build_table(horizon)
 
 
+@st.cache_data(show_spinner=False)
+def cached_fixtures():
+    """The full season's fixture list — separate from cached_build_table
+    since chips.season_outlook needs ALL 38 gameweeks, not just the
+    horizon build_table computes xw{w} columns for."""
+    return opt.get("fixtures/")
+
+
 # ----------------------------------------------------------------------------
 # Sidebar — the same config block fpl_optimise.py has at the top of the
 # file, just editable per-run instead of edited-and-saved. Applying it sets
@@ -326,6 +334,19 @@ if st.button("Run optimiser", type="primary"):
         col.metric(key.replace("_", " ").title(),
                     f"{entry['score']}/10" if entry["score"] is not None else "n/a")
         col.caption(entry["verdict"])
+
+    # Beyond the horizon slider: scan the FULL rest of the season's REAL
+    # confirmed fixtures (not a guess from other seasons — see
+    # season_outlook's docstring) for a gameweek where your squad's teams
+    # have notably more fixtures than anything currently visible.
+    outlook = chips.season_outlook(df, current_ids, cached_fixtures(), gw, horizon)
+    if outlook and not outlook["within_horizon"] and outlook["best_gw_fixtures"] > outlook["this_week_fixtures"]:
+        st.info(f"📅 Beyond your {horizon}-week horizon: GW{outlook['best_gw']} currently has "
+                f"{outlook['best_gw_fixtures']} fixtures across your squad's teams, vs "
+                f"{outlook['this_week_fixtures']} this week — worth extending the horizon "
+                f"slider to see it properly before committing a chip. Based on your CURRENT "
+                f"squad's teams and FPL's currently confirmed fixture list, which will change "
+                f"as you transfer and as later fixtures get scheduled — a heads-up, not a plan.")
 
     with st.expander("Chip detail — week-by-week values and the Free Hit squad"):
         weeks = [f"GW{gw + w}" for w in range(horizon)]

@@ -46,7 +46,7 @@ from datetime import date, datetime
 import pulp
 
 import fpl_optimise as opt
-from fpl_stage0 import HORIZON, build_table, horizon_of
+from fpl_stage0 import HORIZON, build_table, horizon_of, season_fixture_counts
 
 LOG_PATH = "chip_log.csv"
 
@@ -89,6 +89,59 @@ def triple_captain_value(df, squad_ids):
         _, captain = opt.choose_lineup_for_week(df, squad_ids, xpts_col)
         values[w] = info.loc[captain, xpts_col]
     return values
+
+
+def season_outlook(df, squad_ids, fixtures, gw, horizon, end_gw=38):
+    """
+    Scans the FULL REST OF THE SEASON (not just the visible horizon) for
+    a gameweek where your squad's teams collectively have notably more
+    fixtures than anything currently visible — i.e. a double gameweek the
+    horizon slider is too short to see yet. Uses REAL, currently
+    confirmed fixtures (fpl_stage0.season_fixture_counts), deliberately
+    NOT a guess extrapolated from other seasons' gameweek numbers — see
+    chip_scores' docstring for why cross-season pattern-matching isn't
+    reliable here (cup replay rules, European scheduling and
+    international breaks have all changed structurally season to
+    season), while this season's own confirmed fixture list is exactly
+    the reliable signal that replaces it.
+
+    Two real limits, both honestly reflected in the output rather than
+    faked:
+      - This is a rough proxy, not a solve: it uses your CURRENT squad's
+        teams as a stand-in for who you'll actually own that far out —
+        you'll likely have transferred by then. Treat a flagged week as
+        "something worth watching for", not a committed plan.
+      - It can only ever see fixtures FPL has already scheduled. Most
+        doubles/blanks aren't confirmed until partway through the season
+        (cup replays, European competition reshuffling get locked in
+        gradually) — early in the season this will often correctly find
+        nothing, which is a real absence of data, not a bug.
+
+    Returns None if there are no fixtures in range at all. Otherwise a
+    dict: this_week_fixtures, best_gw/best_gw_fixtures (the strongest
+    week found across the WHOLE rest of the season), and within_horizon
+    (whether that best week is already visible in the current horizon —
+    i.e. there's nothing further out worth flagging).
+    """
+    info = df.set_index("id")
+    squad_teams = set(info.loc[squad_ids, "team"])
+    counts = season_fixture_counts(fixtures, start_gw=gw, end_gw=end_gw)
+
+    week_totals = {
+        w: sum(counts.get(t, {}).get(w, 0) for t in squad_teams)
+        for w in range(gw, end_gw + 1)
+    }
+    if not any(week_totals.values()):
+        return None
+
+    best_gw = max(week_totals, key=week_totals.get)
+    return {
+        "this_week_fixtures": week_totals.get(gw, 0),
+        "best_gw": best_gw,
+        "best_gw_fixtures": week_totals[best_gw],
+        "within_horizon": best_gw < gw + horizon,
+        "week_totals": week_totals,
+    }
 
 
 def _solve_stage_a(df, current_ids, bank_t):

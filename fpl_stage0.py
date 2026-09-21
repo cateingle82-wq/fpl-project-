@@ -134,6 +134,35 @@ def fixture_details(fixtures, start_gw, horizon):
     return out
 
 
+def season_fixture_counts(fixtures, start_gw, end_gw=38):
+    """
+    team_id -> {gw: n_fixtures} across the WHOLE rest of the season
+    (start_gw..end_gw inclusive), not just the optimiser's own horizon —
+    cheap (just counting fixtures already fetched, no solving) and, unlike
+    trying to guess a double/blank gameweek from OTHER seasons' patterns
+    (unreliable — cup replay rules, European competition scheduling and
+    international breaks have all changed structurally season to season,
+    see chips.chip_scores' docstring), this reads the REAL confirmed
+    fixture list for THIS season. Its one real limit: a gameweek the FPL
+    API hasn't scheduled yet (common for the back half of the season,
+    pending cup outcomes) simply won't show up here until it's announced
+    — same blind spot every other fixture-reading function in this
+    project already has, not a new one.
+
+    n_fixtures is 0 for a blank, 1 normally, 2+ for a double.
+    """
+    counts = {}
+    for f in fixtures:
+        gw = f["event"]
+        if gw is None or gw < start_gw or gw > end_gw:
+            continue
+        counts.setdefault(f["team_h"], {}).setdefault(gw, 0)
+        counts.setdefault(f["team_a"], {}).setdefault(gw, 0)
+        counts[f["team_h"]][gw] += 1
+        counts[f["team_a"]][gw] += 1
+    return counts
+
+
 def team_strength_dict(teams):
     """team_id -> {attack_home, attack_away, defence_home, defence_away},
     straight off bootstrap-static's 'teams' list (same fields ml_predict.py
