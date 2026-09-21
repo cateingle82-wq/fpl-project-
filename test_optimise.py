@@ -361,6 +361,39 @@ def run_all_checks():
     assert r12["hits"][1] == 0, "a 0.5pt upgrade should never be worth a 4pt hit"
     print("12. spends now when banking wouldn't pay off             OK")
 
+    # 13. autosub simulation: a deterministic squad (avail is only ever 0 or
+    # 1, so the expectation collapses to one realization) with a hand-
+    # computable total, checking that a blanked starter is correctly
+    # covered by the right bench player and a non-blanking one isn't
+    # needlessly subbed in.
+    rows13 = []
+
+    def add13(pid, pos, avail, xpts):
+        rows13.append({"id": pid, "pos": pos, "avail": avail, "xw0": xpts})
+
+    add13(1, "GKP", 1.0, 6.0)    # starting GK, always plays
+    add13(2, "DEF", 0.0, 0.0)    # starting DEF, always blanks
+    add13(3, "DEF", 1.0, 4.0)
+    add13(4, "DEF", 1.0, 4.0)
+    add13(5, "DEF", 1.0, 4.0)
+    add13(6, "MID", 1.0, 5.0)    # captain
+    add13(7, "MID", 1.0, 5.0)
+    add13(8, "MID", 1.0, 5.0)
+    add13(9, "MID", 1.0, 5.0)
+    add13(10, "FWD", 1.0, 7.0)
+    add13(11, "FWD", 1.0, 7.0)
+    add13(12, "GKP", 1.0, 2.0)   # bench GK, never needed
+    add13(13, "DEF", 1.0, 3.0)   # bench DEF, covers player 2's blank
+    add13(14, "MID", 1.0, 1.0)   # bench MID, not needed (only 1 open slot)
+    add13(15, "FWD", 1.0, 1.0)   # bench FWD, not needed
+    df13 = pd.DataFrame(rows13)
+    xi13 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    bench13 = [12, 13, 14, 15]
+    val13 = opt.simulate_autosub_expected_points(df13, xi13, bench13, 6, "xw0")
+    expected13 = 6 + 0 + 4 + 4 + 4 + 3 + 5 + 5 + 5 + 5 + 7 + 7 + 5
+    assert abs(val13 - expected13) < 1e-9, f"expected {expected13}, got {val13}"
+    print("13. autosub simulation covers a blank with the right bench player OK")
+
     print("\nAll checks passed.")
 
 

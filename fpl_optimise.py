@@ -24,6 +24,8 @@ Run:  pip install pulp
       python fpl_optimise.py
 """
 
+import itertools
+
 import pulp
 from fpl_stage0 import HORIZON, build_table, get, horizon_of
 
@@ -359,6 +361,108 @@ def choose_lineup_for_week(df, squad_ids, xpts_col, tiebreak_col="xpts"):
 def choose_lineup(df, squad_ids):
     """Stage B proper: next gameweek only. Thin wrapper over the general form."""
     return choose_lineup_for_week(df, squad_ids, "xpts_gw1")
+
+
+def simulate_autosub_expected_points(df, xi, bench, captain, xpts_col):
+    """
+    Exact expected points for a starting XI + bench under FPL's real
+    autosub rule: a blanked (0-minute) starter is covered by the highest-
+    priority bench player who themselves actually played that week — not
+    the naive "sum of the 11 starters' own expected points" used
+    elsewhere, which silently treats a strong bench as worth nothing (see
+    BENCH_TIEBREAK) and so understates a squad with good backups' true
+    expected return.
+
+    Computed as an EXACT expectation over every played/blanked
+    realization of the 15 squad members (2^15 combinations), each
+    independently using their own `avail` as the probability of playing
+    that week — not a Monte Carlo sample, so there's no sampling noise.
+    `pts_if_play` divides each player's own xw{w} back out by their avail
+    to get "points GIVEN they play" (xw{w} = avail * mins_share * ... —
+    see fpl_stage0.build_table), since a realization already fixes
+    whether they played or not.
+
+    Two known simplifications, both affecting only the rarer MULTI-blank
+    case — a single blank, which dominates the probability mass for
+    realistic avail values, is handled exactly:
+      - Outfield bench players are admitted in bench order as long as
+        doing so doesn't exceed a position's MAXIMUM allowed count (5
+        DEF / 5 MID / 3 FWD); the resulting minimums (>=3 DEF, >=2 MID,
+        >=1 FWD) aren't separately re-checked. This is fine for the
+        POINTS total specifically because which blanked starter a given
+        sub is "credited to" doesn't change it — only how many bench
+        players get admitted does, and that's exactly what this checks.
+      - No vice-captain: if the captain blanks, no one else is doubled
+        (this project doesn't track a vice-captain) — a small,
+        conservative simplification.
+    """
+    info = df.set_index("id")
+    gk_starter = next(p for p in xi if info.loc[p, "pos"] == "GKP")
+    outfield_starters = [p for p in xi if p != gk_starter]
+    gk_bench = next((p for p in bench if info.loc[p, "pos"] == "GKP"), None)
+    outfield_bench = [p for p in bench if p != gk_bench]
+
+    squad15 = list(xi) + list(bench)
+    avail = {p: float(info.loc[p, "avail"]) for p in squad15}
+    pts_if_play = {
+        p: (info.loc[p, xpts_col] / avail[p]) if avail[p] > 1e-6 else 0.0
+        for p in squad15
+    }
+    pos = {p: info.loc[p, "pos"] for p in squad15}
+
+    MAX_DEF, MAX_MID, MAX_FWD = 5, 5, 3
+
+    def counts(ids):
+        n_def = n_mid = n_fwd = 0
+        for p in ids:
+            if pos[p] == "DEF":
+                n_def += 1
+            elif pos[p] == "MID":
+                n_mid += 1
+            elif pos[p] == "FWD":
+                n_fwd += 1
+        return n_def, n_mid, n_fwd
+
+    total = 0.0
+    for bits in itertools.product((0, 1), repeat=len(squad15)):
+        played = dict(zip(squad15, bits))
+        prob = 1.0
+        for p, b in played.items():
+            prob *= avail[p] if b else (1 - avail[p])
+        if prob <= 1e-12:
+            continue
+
+        realized = 0.0
+
+        # GK: exact 1-for-1, always legal.
+        if played[gk_starter]:
+            realized += pts_if_play[gk_starter]
+        elif gk_bench and played[gk_bench]:
+            realized += pts_if_play[gk_bench]
+
+        # Outfield: survivors + greedily admitted bench, capped by max counts.
+        final_outfield = [p for p in outfield_starters if played[p]]
+        n_open = sum(1 for p in outfield_starters if not played[p])
+        admitted = 0
+        for b in outfield_bench:
+            if admitted >= n_open:
+                break
+            if not played[b]:
+                continue
+            trial = final_outfield + [b]
+            n_def, n_mid, n_fwd = counts(trial)
+            if n_def <= MAX_DEF and n_mid <= MAX_MID and n_fwd <= MAX_FWD:
+                final_outfield = trial
+                admitted += 1
+        for p in final_outfield:
+            realized += pts_if_play[p]
+
+        if played[captain]:
+            realized += pts_if_play[captain]   # captain's double
+
+        total += prob * realized
+
+    return total
 
 
 def print_lookahead(df, gw, squad, start, cap):

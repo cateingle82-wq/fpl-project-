@@ -228,19 +228,26 @@ with tab_transfers:
             week_data[w] = (squad_w, xi_w, cap_w)
 
         # --- Expected points per gameweek -----------------------------------
-        # Starting XI's xPts for that week, with the captain's counted twice
-        # (the actual scoring rule) — i.e. what the plan expects to SCORE
-        # each week, not the horizon-wide objective value shown above.
+        # Autosub-adjusted: if a starter blanks (0 minutes), the right
+        # bench player is credited with covering them, same as FPL's own
+        # scoring — not just the naive "sum of the 11 starters' own xPts",
+        # which silently treats a strong bench as worth nothing and so
+        # understates the squad's true expected return. Captain still
+        # counts double. See simulate_autosub_expected_points's docstring
+        # for exactly what this does and doesn't model.
         weekly_pts = []
         for w in range(horizon):
             squad_w, xi_w, cap_w = week_data[w]
+            bench_w = [p for p in squad_w if p not in xi_w]
             xpts_col = f"xw{w}"
             weekly_pts.append(
-                sum(info.loc[p, xpts_col] for p in xi_w) + info.loc[cap_w, xpts_col]
+                opt.simulate_autosub_expected_points(df, xi_w, bench_w, cap_w, xpts_col)
             )
         st.write("**Expected points per gameweek**")
-        st.caption("Starting XI's expected points each week, captain counted twice. "
-                    "Weeks 1+ assume the model's own planned transfers/rotation happen.")
+        st.caption("Autosub-adjusted expected points each week (a blanked starter is "
+                    "covered by the right bench player, same as FPL's own scoring), "
+                    "captain counted twice. Weeks 1+ assume the model's own planned "
+                    "transfers/rotation happen.")
         gw_labels = [f"GW{gw + w}" for w in range(horizon)]
         pts_df = pd.DataFrame({"GW": gw_labels, "Expected points": weekly_pts})
         # st.bar_chart sorts string categories alphabetically (GW10 would
