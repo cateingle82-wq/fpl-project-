@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# OS clutter
+.DS_Store
+
+# Large / regenerable data — these are all rebuilt by running the scripts,
+# so there's no point bloating git history with them (some are multi-MB).
+history_cache/
+feature_cache.joblib
+player_history_cache.json
+fpl_snapshot.csv
+
+# The trained model is a binary blob that regenerates from ml_train.py —
+# convenient to keep locally, not worth tracking in git (every retrain
+# would show as a full-file change with no readable diff).
+ml_model.joblib
+
+# Keep: all your .py files, test_*.py, the small result CSVs
+# (backtest_results.csv, chip_log.csv, ml_holdout_results.csv) — those are
+# small and genuinely useful to see change over time in git history.
