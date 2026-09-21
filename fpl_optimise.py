@@ -21,7 +21,7 @@ Run:  pip install pulp
 """
 
 import pulp
-from fpl_stage0 import HORIZON, build_table, get
+from fpl_stage0 import HORIZON, build_table, get, horizon_of
 
 # ----------------------------------------------------------------------------
 # CONFIG — edit this block
@@ -29,6 +29,14 @@ from fpl_stage0 import HORIZON, build_table, get
 
 TEAM_ID = 7362936           # your FPL entry id (the number in your team's URL)
 MANUAL_SQUAD = []         # or hardcode 15 element ids if you'd rather
+
+# How many gameweeks ahead to plan over. None = use fpl_stage0's own
+# default (HORIZON, currently 5). This is the REAL lever for how much
+# squad selection values bench depth/rotation — see build_problem's
+# docstring. A longer horizon rewards a squad that can field a strong XI
+# in many different weeks; horizon=1 has no rotation value at all, by
+# construction, whatever BENCH_WEIGHT is set to.
+OPTIMISE_HORIZON = None
 
 BANK = 0.0                # money in the bank, in millions
 FREE_TRANSFERS = 5
@@ -91,17 +99,27 @@ def sell_price_tenths(purchase_t, current_t):
 def build_problem(df, current_ids, bank_t):
     """
     Stage A. Which 15 players to own — valued by simulating your BEST possible
-    lineup in EACH of the next HORIZON gameweeks separately, not one blended
+    lineup in EACH of the next `horizon` gameweeks separately, not one blended
     average. This is what lets a squad decision correctly reason "keep him
     even though he blanks GW9, because he doubles GW10" instead of averaging
     those two facts into a single number that hides both of them.
+
+    How many weeks "the horizon" actually is comes from df itself (via
+    horizon_of), not a fixed constant — build_table() can be called with
+    any horizon (the app's sidebar lets you choose), and this just plans
+    over however many weeks that df was actually built for. A LONGER
+    horizon is the real lever for "value bench depth more": with more
+    weeks in play, a squad gets rewarded for having players who can
+    rotate into different weeks' best XIs, not just one strong XI —
+    that reward doesn't exist at all with horizon=1.
 
     start[w][p] / cap[w][p]: does player p start / captain gameweek w
     (w=0 is next week, w=1 the one after, ...). One full XI-and-captain
     sub-decision per week, all sharing the same fixed squad[p].
     """
+    horizon = horizon_of(df)
     ids = df["id"].tolist()
-    weekly_xpts = [dict(zip(df["id"], df[f"xw{w}"])) for w in range(HORIZON)]
+    weekly_xpts = [dict(zip(df["id"], df[f"xw{w}"])) for w in range(horizon)]
     pos = dict(zip(df["id"], df["pos"]))
     team = dict(zip(df["id"], df["team"]))
     now_t = dict(zip(df["id"], df["now_cost"]))          # already in tenths
@@ -124,8 +142,8 @@ def build_problem(df, current_ids, bank_t):
     prob = pulp.LpProblem("fpl_transfers", pulp.LpMaximize)
 
     squad = pulp.LpVariable.dicts("squad", ids, cat="Binary")
-    start = {w: pulp.LpVariable.dicts(f"start_w{w}", ids, cat="Binary") for w in range(HORIZON)}
-    cap = {w: pulp.LpVariable.dicts(f"cap_w{w}", ids, cat="Binary") for w in range(HORIZON)}
+    start = {w: pulp.LpVariable.dicts(f"start_w{w}", ids, cat="Binary") for w in range(horizon)}
+    cap = {w: pulp.LpVariable.dicts(f"cap_w{w}", ids, cat="Binary") for w in range(horizon)}
     hits = pulp.LpVariable("hits", lowBound=0, cat="Integer")
 
     # Anyone we own but don't keep has been sold. Defined here, ahead of the
@@ -152,7 +170,7 @@ def build_problem(df, current_ids, bank_t):
             weekly_xpts[w][p] * (start[w][p] + cap[w][p] + BENCH_WEIGHT * (squad[p] - start[w][p]))
             for p in ids
         )
-        for w in range(HORIZON)
+        for w in range(horizon)
     ]
     prob += (
         pulp.lpSum(week_terms)
@@ -173,7 +191,7 @@ def build_problem(df, current_ids, bank_t):
     prob += pulp.lpSum(cost_t[p] * squad[p] for p in ids) <= budget_t
 
     # --- starting XI + captain, repeated for EACH week independently --------
-    for w in range(HORIZON):
+    for w in range(horizon):
         prob += pulp.lpSum(start[w][p] for p in ids) == 11
         for p in ids:
             prob += start[w][p] <= squad[p]     # can't start who you don't own
@@ -262,15 +280,16 @@ def choose_lineup(df, squad_ids):
 def print_lookahead(df, gw, chosen, start, cap):
     """
     Stage A solves a full per-week plan internally just to VALUE candidate
-    squads — this prints that plan for weeks 1..HORIZON-1 (week 0 is Stage
+    squads — this prints that plan for weeks 1..horizon-1 (week 0 is Stage
     B's job, reported properly in report() below; this is context for WHY
     the transfer decision above looks the way it does, not a second opinion
     on it — always defer to Stage B for what to actually do this week).
     """
+    horizon = horizon_of(df)
     info = df.set_index("id")
     print("\nLOOK-AHEAD (why Stage A valued this squad the way it did — "
           "always re-run Stage B fresh each week for the real decision)")
-    for w in range(1, HORIZON):
+    for w in range(1, horizon):
         captain_w = next((p for p in chosen if cap[w][p].value() > 0.5), None)
         starters_w = [p for p in chosen if start[w][p].value() > 0.5]
         # A starter scoring exactly 0 that week despite normally being a
@@ -345,7 +364,7 @@ def report(df, current_ids, squad, hits, cost_t, budget_t, xi, captain):
 
 
 def main():
-    df, gw = build_table()
+    df, gw = build_table(horizon=OPTIMISE_HORIZON) if OPTIMISE_HORIZON else build_table()
 
     if MANUAL_SQUAD:
         current_ids = MANUAL_SQUAD
@@ -357,7 +376,8 @@ def main():
     if len(current_ids) != 15:
         raise SystemExit(f"Expected 15 players, got {len(current_ids)}.")
 
-    # Stage A: which 15 to own, weighing the full HORIZON of fixtures.
+    # Stage A: which 15 to own, weighing the full horizon of fixtures
+    # (df's own horizon_of(df) weeks — see OPTIMISE_HORIZON above).
     prob, squad, start, cap, hits, cost_t, budget_t = build_problem(
         df, current_ids, int(round(BANK * 10))
     )
