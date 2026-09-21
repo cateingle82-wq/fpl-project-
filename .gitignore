@@ -5,6 +5,9 @@ __pycache__/
 # OS clutter
 .DS_Store
 
+# Personal notes, not part of the project
+sticky-notes/
+
 # Large / regenerable data — these are all rebuilt by running the scripts,
 # so there's no point bloating git history with them (some are multi-MB).
 history_cache/

@@ -177,19 +177,28 @@ def test_free_hit_detail_is_internally_consistent():
 
 
 def test_log_row_appends(tmp_path_str="chip_log_test.csv"):
+    """One run now logs one row PER WEEK of the horizon (not just week 0),
+    with wildcard/free_hit only on the target_gw == run_gw row — they're
+    a horizon-wide total and a this-week-only number, not real per-week
+    trajectories the way bench_boost/triple_captain are."""
     import os
     chips.LOG_PATH = tmp_path_str
     if os.path.exists(tmp_path_str):
         os.remove(tmp_path_str)
-    chips.log_row(6, 1.23, 2.34, 3.45, 4.56)
-    chips.log_row(7, 1.11, 2.22, 3.33, 4.44)
+    bb = {0: 1.23, 1: 1.50, 2: 1.80}
+    tc = {0: 2.34, 1: 2.50, 2: 2.60}
+    chips.log_row(6, bb, tc, 3.45, 4.56, horizon=3)
     with open(tmp_path_str) as f:
         lines = f.read().strip().splitlines()
-    assert len(lines) == 3, lines            # header + 2 rows
-    assert lines[0].startswith("date,gw,")
-    assert ",6," in lines[1] and ",7," in lines[2]
+    assert len(lines) == 4, lines            # header + 3 weeks
+    assert lines[0].startswith("date,run_gw,target_gw,")
+    assert ",6,6," in lines[1]               # week offset 0: target == run
+    assert ",6,7," in lines[2]               # week offset 1
+    assert ",6,8," in lines[3]               # week offset 2
+    assert lines[1].endswith("3.45,4.56")    # wildcard/free_hit on week 0
+    assert lines[2].endswith(",")            # ...but blank on later weeks
     os.remove(tmp_path_str)
-    print("10. log_row appends rows, writes header once                 OK")
+    print("10. log_row logs one row per horizon week, wc/fh only on week 0  OK")
 
 
 if __name__ == "__main__":

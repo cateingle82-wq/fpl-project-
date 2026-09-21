@@ -349,8 +349,8 @@ if st.button("Run optimiser", type="primary"):
         )
 
     if log_chip_reading:
-        chips.log_row(gw, bb[0], tc[0], wc, fh)
-        st.caption(f"Logged GW{gw} chip readings to {chips.LOG_PATH}.")
+        chips.log_row(gw, bb, tc, wc, fh, horizon)
+        st.caption(f"Logged GW{gw}-GW{gw + horizon - 1} chip readings to {chips.LOG_PATH}.")
 
     # --- Per-week squad/XI/captain, solved once and reused below for
     # both the expected-points chart and the per-week tabs — avoids

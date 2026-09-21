@@ -214,16 +214,31 @@ def print_free_hit_xi(df, detail):
           f"(full budget, no sell-price penalty applied — it's hypothetical)")
 
 
-def log_row(gw, bb, tc, wc, fh):
-    """Append one row to chip_log.csv. Never overwrite — track over time."""
+def log_row(gw, bb, tc, wc, fh, horizon):
+    """Append one row PER WEEK of the horizon to chip_log.csv, not just
+    this week's reading — bb/tc are already per-week dicts (see
+    bench_boost_value/triple_captain_value), so a single run now leaves a
+    full week-by-week trace of what it saw, e.g. letting you compare what
+    GW9's bench boost value looked like from three different runs weeks
+    apart, not just track a single collapsed number. Never overwrite —
+    track over time.
+
+    wildcard/free_hit are a horizon-wide total and a this-week-only
+    number respectively, not real per-week trajectories the way bb/tc
+    are — written only on the target_gw == run_gw row (blank elsewhere)
+    so the log doesn't imply they vary week to week when they don't."""
     is_new = not os.path.exists(LOG_PATH)
     with open(LOG_PATH, "a", newline="") as f:
         w = csv.writer(f)
         if is_new:
-            w.writerow(["date", "gw", "bench_boost_gw1", "triple_captain_gw1",
-                        "wildcard", "free_hit"])
-        w.writerow([date.today().isoformat(), gw, f"{bb:.2f}", f"{tc:.2f}",
-                    f"{wc:.2f}", f"{fh:.2f}"])
+            w.writerow(["date", "run_gw", "target_gw", "bench_boost",
+                        "triple_captain", "wildcard", "free_hit"])
+        today = date.today().isoformat()
+        for offset in range(horizon):
+            wc_cell = f"{wc:.2f}" if offset == 0 else ""
+            fh_cell = f"{fh:.2f}" if offset == 0 else ""
+            w.writerow([today, gw, gw + offset, f"{bb[offset]:.2f}",
+                        f"{tc[offset]:.2f}", wc_cell, fh_cell])
 
 
 def main():
@@ -271,10 +286,10 @@ def main():
     print(f"Best week to play Triple Captain (of the next {horizon}): "
           f"GW{gw + max(tc, key=tc.get)} (+{max(tc.values()):.2f} pts)")
 
-    log_row(gw, bb[0], tc[0], wc, fh)
-    print(f"\nLogged GW{gw} readings to {LOG_PATH}. Don't act on one week's "
-          f"numbers alone — check back after a few gameweeks for a trend, "
-          f"same as backtest.py.")
+    log_row(gw, bb, tc, wc, fh, horizon)
+    print(f"\nLogged GW{gw}-GW{gw + horizon - 1} readings to {LOG_PATH}. Don't "
+          f"act on one week's numbers alone — check back after a few "
+          f"gameweeks for a trend, same as backtest.py.")
 
 
 if __name__ == "__main__":
