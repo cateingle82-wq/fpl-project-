@@ -119,6 +119,7 @@ stayed on `ml_*.py`/`fpl_history.py`.
 | `fpl_optimise.py` | Stage A/B MILP (squad+transfer planning, lineup, autosub sim) |
 | `chips.py` | Chip valuation (bench boost/triple captain/wildcard/free hit), timing scores, season outlook, logging |
 | `app.py` | Streamlit dashboard — single page, sidebar config + model-health expander |
+| `api.py` | FastAPI HTTP wrapper over the same optimiser/chip logic — see its own round below |
 | `ml_features.py` / `ml_train.py` / `ml_predict.py` / `fpl_history.py` | ML cold-start-only prediction path (see `ml_predict.py`'s docstring for why it's scoped that way) |
 | `backtest.py` | Live-season prediction-quality validation |
 | `chip_log.csv` | Per-gameweek chip value log (tracked in git — small, meant to accumulate) |
@@ -226,6 +227,90 @@ throwaway rows into `chip_log.csv`/`last_run_snapshot.json` — the
 `last_run_snapshot.json` is gitignored so its test content never reached
 git.
 
+## `cateingle-f9` session, round 3: OptimiserConfig refactor + FastAPI scaffold (api.py)
+
+Prompted by exploring a mobile-app path for this project. Two pieces:
+
+**1. Fixed a real (not just future-proofing) bug**: `fpl_optimise.build_problem()`
+used to read `FREE_TRANSFERS`/`MAX_TRANSFERS`/`HIT_COST`/`BAN_UNAVAILABLE`/
+`PURCHASE_PRICES` straight off this module's globals, and
+`chips.wildcard_detail`/`free_hit_detail` TEMPORARILY OVERWROTE
+`opt.MAX_TRANSFERS`/`opt.HIT_COST` mid-function to get a different
+hypothetical, restoring them in a `finally`. That's a live race the
+moment more than one solve could be in flight against the same process —
+e.g. this dashboard open in two browser tabs against different team IDs,
+since Streamlit runs each session in its own thread of the SAME process,
+sharing this SAME module object. Fixed by adding `opt.OptimiserConfig` (a
+frozen dataclass) — `build_problem(df, current_ids, bank_t, config=None)`
+now takes one explicitly; `config=None` defaults to `opt.current_config()`
+(a snapshot of the module's globals), so **every pre-existing caller
+(this file's `main()`, `app.py`'s `apply_config()`, `chips.py`'s
+`main()`) needed ZERO changes**. `wildcard_detail`/`free_hit_detail` now
+build a local `dataclasses.replace()` copy instead of mutating shared
+state — the whole `try/finally` restore dance is gone, nothing shared
+left to restore. Also added an optional `base_config` param to both so a
+caller with its OWN config (not sourced from these globals at all, e.g.
+an API request) doesn't get silently ignored in favour of module
+defaults.
+
+**2. `api.py`** — a FastAPI scaffold wrapping the same solver/chip logic
+behind HTTP instead of Streamlit widgets, as groundwork for a possible
+mobile client later (PWA recommended over native React Native — same
+backend either way, PWA needs no app-store review). Endpoints:
+`GET /health`, `GET /deadline`, `GET /squad?team_id=`, `POST /recommend`,
+`POST /chips`, `GET /chip-log`, `GET /model-health`. Every solve builds
+its own `OptimiserConfig` from the request body — no shared mutable
+state, so concurrent requests are actually safe (verified: `opt.
+MAX_TRANSFERS` never moves while two "concurrent" configs are built and
+used). Same scope as `app.py` has always had: single-user, no auth,
+`chip_log.csv`/`backtest_results.csv` are still single shared files on
+disk — fine for one person, not multi-user-safe.
+
+**Real bug found and fixed while testing this**: `resolve_squad()`
+originally only caught `SystemExit` from `fetch_squad_and_bank` (what it
+raises deliberately for a CLI's benefit). A genuinely nonexistent team id
+doesn't raise `SystemExit` at all — `fpl_stage0.get()` calls
+`response.raise_for_status()`, which raises a plain
+`requests.exceptions.HTTPError` on the FPL API's 404. That leaked through
+as an unhandled 500 + traceback for the single most likely user mistake
+against this endpoint (typo'd team id), caught live with a real curl
+test against `team_id=999999999`. Fixed with a `_fetch_or_400()` helper
+catching both exception types. `fetch_squad_and_bank` raising
+`SystemExit` at all is itself a CLI-era wart worth fixing properly in
+`fpl_optimise.py` someday — this is the pragmatic interim catch, not that
+fix.
+
+**Dependency note**: `fastapi` was stuck at `0.103.2` (installed before
+this session started) and incompatible with the `starlette 1.6.0` that
+an earlier `streamlit --force-reinstall` had pulled in as a side effect —
+`FastAPI()` itself raised `TypeError: Router.__init__() got an
+unexpected keyword argument 'on_startup'` on import. Fixed with
+`pip install "fastapi>=0.115"` (landed on `0.141.1`). This flagged (but
+did not create) a pre-existing conflict: `spotdl` on this machine pins
+`fastapi<0.104`/`uvicorn<0.24`/`websockets<15`, already broken by the
+streamlit reinstall's `uvicorn 0.53`/`websockets 16.1.1` before this
+session touched anything — if `spotdl` stops working, that's why, and
+it's unrelated to this project.
+
+**Verified**: full `pytest -q` (50 passed) both before and after,
+`streamlit.testing.v1.AppTest` confirming the dashboard's objective is
+IDENTICAL (273.68) before/after the config refactor, and live `curl`
+tests against every `api.py` endpoint with real data — `/recommend` and
+`/chips` both return real solved output for team `7362936`, `/squad`
+works, error paths return clean 400s (bad team id) and 422s (missing
+`team_id`/`manual_squad`, wrong-length `manual_squad`) instead of raw
+500s.
+
+**Not done, worth knowing**: no `requirements.txt`/`pyproject.toml`
+anywhere in this repo — every script assumes its deps are just already
+installed in whatever environment runs it (`/opt/anaconda3/bin/python`
+on this machine specifically, per the "Running things" note below). If
+this is ever run somewhere else, that's the first gap to close, not just
+for `api.py`. No auth, no request rate-limiting, no fresh-backtest
+endpoint (a `/backtest/run` would need to run ~700 API calls
+asynchronously, not block a request thread — left out of this scaffold
+on purpose rather than done half-right).
+
 ## Running things
 
 ```bash
@@ -242,6 +327,10 @@ python fpl_optimise.py   # Stage A/B squad+transfer recommendation
 python chips.py          # chip values, scores, logs to chip_log.csv
 python backtest.py       # live-season prediction-quality check
 python ml_train.py       # retrain the ML model (only affects cold-start players)
+
+# FastAPI backend (see api.py's own docstring for endpoint list)
+uvicorn api:app --reload
+# -> http://localhost:8000/docs for the interactive OpenAPI UI
 ```
 
 Note: this machine's `python3` on `PATH` sometimes resolves to a bare

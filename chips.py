@@ -160,8 +160,16 @@ def _solve_stage_a(df, current_ids, bank_t, config=None):
     return chosen, pulp.value(prob.objective)
 
 
-def wildcard_detail(df, current_ids, bank_t):
+def wildcard_detail(df, current_ids, bank_t, base_config=None):
     """
+    base_config: the config wildcard/frozen are each a MODIFIED COPY of —
+    None (default) falls back to opt.current_config() (this module's own
+    globals), same as every existing caller already gets. Pass one
+    explicitly when the caller has its own config that didn't come from
+    these globals at all (e.g. an API request's own settings) — without
+    this, that caller's hit_cost/ban_unavailable etc. would be silently
+    ignored in favour of whatever the module's globals happen to be.
+
     Full working behind the wildcard number, not just the gap — in
     particular `objective`, the raw horizon-total value of a free full
     rebuild right now, which is what actually needs comparing against
@@ -181,7 +189,7 @@ def wildcard_detail(df, current_ids, bank_t):
     horizon-total value), frozen_objective (your current 15, untouched,
     valued the same honest way), and gain = objective - frozen_objective.
     """
-    base_config = opt.current_config()
+    base_config = base_config or opt.current_config()
 
     # Best possible squad if you could freely rebuild, no penalty at all.
     wildcard_config = replace(base_config, max_transfers=15, hit_cost=0.0)
@@ -209,8 +217,11 @@ def wildcard_value(df, current_ids, bank_t):
     return wildcard_detail(df, current_ids, bank_t)["gain"]
 
 
-def free_hit_detail(df, current_ids, bank_t):
+def free_hit_detail(df, current_ids, bank_t, base_config=None):
     """
+    base_config: see wildcard_detail's docstring — same reasoning, same
+    default (opt.current_config() when None).
+
     Full working behind the free hit number, not just the gap: the actual
     squad/XI/captain Stage A would build for a one-week-only rebuild, plus
     your current squad's own week-0 XI/captain for comparison. Lets you
@@ -222,7 +233,7 @@ def free_hit_detail(df, current_ids, bank_t):
     current_xi, current_captain, current_score (your real squad, week 0
     only), plus gain = score - current_score.
     """
-    fh_config = replace(opt.current_config(), max_transfers=15, hit_cost=0.0)
+    fh_config = replace(base_config or opt.current_config(), max_transfers=15, hit_cost=0.0)
     free_hit_squad, _ = _solve_stage_a(df, current_ids, bank_t, fh_config)
 
     fh_xi, fh_cap = opt.choose_lineup_for_week(df, free_hit_squad, "xw0")
