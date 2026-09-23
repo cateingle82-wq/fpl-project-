@@ -25,6 +25,7 @@ Run:  pip install pulp
 """
 
 import itertools
+from dataclasses import dataclass, field
 
 import pulp
 from fpl_stage0 import HORIZON, build_table, get, horizon_of
@@ -85,6 +86,53 @@ MAX_BANKED_FREE_TRANSFERS = 5
 _BIG_M = 20
 
 # ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OptimiserConfig:
+    """Every per-run setting build_problem() needs, bundled instead of
+    read off module globals. Why this exists: the old design had
+    build_problem() read FREE_TRANSFERS/MAX_TRANSFERS/HIT_COST/
+    BAN_UNAVAILABLE/PURCHASE_PRICES directly from this module's globals,
+    and chips.py's wildcard/free-hit evaluation TEMPORARILY OVERWROTE
+    opt.MAX_TRANSFERS/opt.HIT_COST mid-function to get a different
+    hypothetical, restoring them in a `finally`. That's a real race the
+    moment more than one solve could be in flight against the same
+    process at once (e.g. this dashboard open in two browser tabs against
+    different team IDs — Streamlit runs each session in its own thread of
+    the SAME process, sharing this SAME module object) — one solve's
+    temporary global patch could leak into a different, concurrent
+    solve's real numbers. An immutable config object passed explicitly
+    removes the shared mutable state entirely instead of just being
+    careful around it.
+
+    frozen=True (raises if you try to mutate a field) so a caller can't
+    reintroduce the same class of bug by assigning into a shared instance
+    instead of building a new one via dataclasses.replace().
+    """
+    free_transfers: int
+    max_transfers: int
+    hit_cost: float
+    ban_unavailable: bool
+    purchase_prices: dict = field(default_factory=dict)
+
+
+def current_config():
+    """A snapshot of this module's own globals as an OptimiserConfig —
+    what build_problem() falls back to when no config is passed
+    explicitly. This is what lets every EXISTING caller (this file's own
+    main(), app.py's apply_config(), chips.py's main()) keep working
+    completely unchanged: they still set opt.FREE_TRANSFERS etc. as
+    before, and build_problem() picks those up automatically. Only NEW
+    code (an eventual API layer, or anything needing more than one
+    config alive at once) needs to construct an OptimiserConfig by hand."""
+    return OptimiserConfig(
+        free_transfers=FREE_TRANSFERS,
+        max_transfers=MAX_TRANSFERS,
+        hit_cost=HIT_COST,
+        ban_unavailable=BAN_UNAVAILABLE,
+        purchase_prices=dict(PURCHASE_PRICES),
+    )
 
 
 def fetch_squad_and_bank(team_id, gw):
@@ -167,7 +215,7 @@ def sell_price_tenths(purchase_t, current_t):
     return purchase_t + (current_t - purchase_t) // 2
 
 
-def build_problem(df, current_ids, bank_t):
+def build_problem(df, current_ids, bank_t, config=None):
     """
     Stage A. A single MILP that plans your squad for EVERY week of the
     horizon at once, including how many transfers to use in each week —
@@ -207,7 +255,14 @@ def build_problem(df, current_ids, bank_t):
     best guess at what it WOULD do, useful for understanding why it's
     making week 0's decision the way it is (see print_lookahead), not a
     commitment. Re-run fresh every week once real news comes in.
+
+    config: an OptimiserConfig, or None (default) to use current_config()
+    — a snapshot of this module's own globals, so every pre-existing
+    caller keeps working with zero changes. Pass an explicit config to
+    get a different hypothetical (e.g. chips.py's wildcard/free-hit
+    evaluation) without touching any shared state.
     """
+    config = config or current_config()
     horizon = horizon_of(df)
     ids = df["id"].tolist()
     weekly_xpts = [dict(zip(df["id"], df[f"xw{w}"])) for w in range(horizon)]
@@ -227,7 +282,7 @@ def build_problem(df, current_ids, bank_t):
     cost_t = {}
     for p in ids:
         if p in current:
-            paid_t = int(round(PURCHASE_PRICES.get(p, now_t[p] / 10.0) * 10))
+            paid_t = int(round(config.purchase_prices.get(p, now_t[p] / 10.0) * 10))
             cost_t[p] = sell_price_tenths(paid_t, now_t[p])
         else:
             cost_t[p] = now_t[p]
@@ -246,7 +301,7 @@ def build_problem(df, current_ids, bank_t):
     # ft[0] is a KNOWN CONSTANT (your real transfer count right now), not a
     # decision — nothing before this week is up for negotiation. ft[1:] are
     # real variables, solved for via the banking recursion below.
-    ft = {0: FREE_TRANSFERS}
+    ft = {0: config.free_transfers}
     for w in range(1, horizon):
         ft[w] = pulp.LpVariable(f"ft_w{w}", lowBound=0, upBound=MAX_BANKED_FREE_TRANSFERS, cat="Integer")
 
@@ -267,7 +322,7 @@ def build_problem(df, current_ids, bank_t):
     ]
     prob += (
         pulp.lpSum(week_terms)
-        - HIT_COST * pulp.lpSum(hits[w] for w in range(horizon))
+        - config.hit_cost * pulp.lpSum(hits[w] for w in range(horizon))
     )
 
     # --- squad shape, repeated for EACH week independently ---------------------
@@ -302,7 +357,7 @@ def build_problem(df, current_ids, bank_t):
         for p in ids:
             prob += squad[w][p] - prev[p] == tin[w][p] - tout[w][p]
         transfers_used[w] = pulp.lpSum(tout[w][p] for p in ids)
-        prob += transfers_used[w] <= MAX_TRANSFERS
+        prob += transfers_used[w] <= config.max_transfers
         prob += hits[w] >= transfers_used[w] - ft[w]
         # hits[w] is only ever pushed DOWN by the objective, so it settles
         # at max(0, transfers_used[w] - ft[w]). No upper bound needed.
@@ -330,7 +385,7 @@ def build_problem(df, current_ids, bank_t):
         # variable bounds — no separate constraint needed for those.
 
     # --- don't buy injured players (keeping an already-owned one is fine) -----
-    if BAN_UNAVAILABLE:
+    if config.ban_unavailable:
         for w in range(horizon):
             for p in ids:
                 if avail[p] == 0:

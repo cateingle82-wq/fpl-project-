@@ -41,6 +41,7 @@ Run:  python chips.py
 
 import csv
 import os
+from dataclasses import replace
 from datetime import date, datetime
 
 import pulp
@@ -144,9 +145,9 @@ def season_outlook(df, squad_ids, fixtures, gw, horizon, end_gw=38):
     }
 
 
-def _solve_stage_a(df, current_ids, bank_t):
+def _solve_stage_a(df, current_ids, bank_t, config=None):
     prob, squad, start, cap, hits, ft, tin, tout, cost_t, budget_t = opt.build_problem(
-        df, current_ids, bank_t
+        df, current_ids, bank_t, config
     )
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     status = pulp.LpStatus[prob.status]
@@ -169,29 +170,27 @@ def wildcard_detail(df, current_ids, bank_t):
     alone (vs a FROZEN squad baseline) can't answer that, since the real
     recommended plan already isn't frozen; it's paying for transfers.
 
-    Temporarily loosens the transfer constraints to "anything goes, no
-    cost", solves, then restores the real config — a wildcard is exactly
-    that hypothetical, made real for one solve. Config is restored in a
-    finally block so a crash mid-evaluation can't leave your real settings
-    silently changed for a later run in the same process.
+    Builds a LOCAL, modified copy of the current config for each
+    hypothetical (dataclasses.replace) instead of temporarily overwriting
+    opt.MAX_TRANSFERS/opt.HIT_COST and restoring them afterwards — the old
+    approach shared mutable state that a concurrent solve elsewhere in the
+    same process could have read mid-mutation; a local config object has
+    nothing to leak. See OptimiserConfig's docstring for the full reasoning.
 
     Returns a dict: squad (the wildcard rebuild), objective (its
     horizon-total value), frozen_objective (your current 15, untouched,
     valued the same honest way), and gain = objective - frozen_objective.
     """
-    orig = (opt.MAX_TRANSFERS, opt.HIT_COST)
-    try:
-        # Best possible squad if you could freely rebuild, no penalty at all.
-        opt.MAX_TRANSFERS = 15
-        opt.HIT_COST = 0.0
-        wildcard_squad, wildcard_obj = _solve_stage_a(df, current_ids, bank_t)
+    base_config = opt.current_config()
 
-        # Baseline: your current 15, untouched, valued the same honest way
-        # (best per-week lineup + captain for that fixed squad).
-        opt.MAX_TRANSFERS = 0
-        _, frozen_obj = _solve_stage_a(df, current_ids, bank_t)
-    finally:
-        opt.MAX_TRANSFERS, opt.HIT_COST = orig
+    # Best possible squad if you could freely rebuild, no penalty at all.
+    wildcard_config = replace(base_config, max_transfers=15, hit_cost=0.0)
+    wildcard_squad, wildcard_obj = _solve_stage_a(df, current_ids, bank_t, wildcard_config)
+
+    # Baseline: your current 15, untouched, valued the same honest way
+    # (best per-week lineup + captain for that fixed squad).
+    frozen_config = replace(base_config, max_transfers=0)
+    _, frozen_obj = _solve_stage_a(df, current_ids, bank_t, frozen_config)
 
     return {
         "squad": wildcard_squad,
@@ -223,13 +222,8 @@ def free_hit_detail(df, current_ids, bank_t):
     current_xi, current_captain, current_score (your real squad, week 0
     only), plus gain = score - current_score.
     """
-    orig = (opt.MAX_TRANSFERS, opt.HIT_COST)
-    try:
-        opt.MAX_TRANSFERS = 15
-        opt.HIT_COST = 0.0
-        free_hit_squad, _ = _solve_stage_a(df, current_ids, bank_t)
-    finally:
-        opt.MAX_TRANSFERS, opt.HIT_COST = orig
+    fh_config = replace(opt.current_config(), max_transfers=15, hit_cost=0.0)
+    free_hit_squad, _ = _solve_stage_a(df, current_ids, bank_t, fh_config)
 
     fh_xi, fh_cap = opt.choose_lineup_for_week(df, free_hit_squad, "xw0")
     cur_xi, cur_cap = opt.choose_lineup_for_week(df, current_ids, "xw0")
