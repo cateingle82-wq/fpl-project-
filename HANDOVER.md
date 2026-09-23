@@ -336,3 +336,67 @@ uvicorn api:app --reload
 Note: this machine's `python3` on `PATH` sometimes resolves to a bare
 system interpreter without the project's dependencies installed — if you
 hit `ModuleNotFoundError`, try `/opt/anaconda3/bin/python3` explicitly.
+
+## `cateingle-f9` session, round 4: React Native frontend scaffold (mobile/)
+
+Brand new `mobile/` subdirectory, zero overlap with any Python file —
+scaffolded via `npx create-expo-app mobile --template blank-typescript`
+(Expo SDK 57, React 19.2.3, react-native 0.86.3), then converted to
+**Expo Router** (file-based routing in `src/app/`) per the template's own
+`AGENTS.md`, which mandates it over any other navigation approach.
+
+**What's built** — one real, working screen proving the whole stack
+end-to-end, not a UI shell:
+- `src/lib/config.ts` — API base URL + FPL Team ID, persisted in
+  AsyncStorage.
+- `src/lib/api.ts` — typed client mirroring `api.py`'s actual response
+  shapes exactly (no shared schema between Python/TS — if one changes,
+  the other needs a matching manual edit). `ApiError` surfaces FastAPI's
+  `{"detail": "..."}` error bodies and gives an actionable message on a
+  network-level failure (most likely first-run mistake: wrong base URL).
+- `src/app/index.tsx` — the Recommend screen: fetches `POST /recommend`
+  for a real team, renders the transfer recommendation, captain, XI,
+  bench.
+- `src/app/settings.tsx` — Team ID + API base URL, with IN-APP guidance
+  on the actual gotcha here: `localhost` only resolves correctly from
+  the iOS Simulator (shares the host Mac's network namespace); a
+  physical phone needs the dev machine's real LAN IP with the API server
+  started via `uvicorn api:app --host 0.0.0.0` (NOT the default
+  `127.0.0.1`-only bind used earlier in api.py's own testing); the
+  Android emulator needs its special `10.0.2.2` host alias.
+- `app.json` — added `expo-build-properties` (Android
+  `usesCleartextTraffic: true`) and iOS `NSAppTransportSecurity`
+  exceptions, since both platforms block plain HTTP to a dev server by
+  default. Checked against the actual SDK 57 docs per `AGENTS.md`'s own
+  instruction not to trust training data on Expo APIs — confirmed via
+  `docs.expo.dev/versions/v57.0.0/` rather than assumed.
+
+**Verified, and what wasn't**: `npx tsc --noEmit` (clean), `npx expo
+lint` (found and fixed 2 real unescaped-apostrophe errors in
+`settings.tsx`), `npx expo-doctor` (21/21 checks pass), and a live
+`npx expo start --web` run — Metro bundled cleanly (858 modules, zero
+errors) against a REAL `uvicorn api:app --host 0.0.0.0` instance, and the
+compiled bundle was checked to contain the actual screen text
+("Get Recommendation", "No team set"), confirming the router/screens/API
+client all wire together correctly. **This session has no browser
+automation tool connected** (checked — neither the Chrome extension nor
+a built-in browser were available), so nobody has actually clicked
+"Get Recommendation" and watched a real result render. That's the one
+verification gap here: whoever picks this up next should run `npx expo
+start --web` (or on a simulator/device) and manually confirm the fetch →
+render flow works, before trusting it further.
+
+**Two dependency hiccups along the way, both fixed**: `npx expo lint`'s
+first run failed installing `eslint`/`eslint-config-expo` over a
+`react-dom` peer conflict (fixed with `npm install --legacy-peer-deps`);
+`npx expo start --web` needed `react-dom`/`react-native-web` installed
+separately (`npx expo install react-dom react-native-web -- --legacy-peer-deps`)
+since the blank-typescript template doesn't include web support by
+default.
+
+**Not done, worth knowing**: no chip-strategy screen yet (the `POST
+/chips` client function exists in `api.ts`, unused so far), no pitch-view
+equivalent, no navigation beyond the two screens, no app icon/branding
+beyond the Expo template defaults, no tests. This is a first vertical
+slice (one real screen, real data, real error handling), not a port of
+everything `app.py` does.
