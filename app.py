@@ -125,10 +125,6 @@ team_id = st.sidebar.number_input(
     "Team ID", value=int(opt.TEAM_ID), step=1,
     help="The number in your FPL team's URL.",
 )
-bank = st.sidebar.number_input("Bank (£m)", value=float(opt.BANK), step=0.1, format="%.1f")
-free_transfers = st.sidebar.number_input(
-    "Free transfers", value=int(opt.FREE_TRANSFERS), min_value=0, max_value=15, step=1
-)
 max_transfers = st.sidebar.number_input(
     "Max transfers in any single week", value=int(opt.MAX_TRANSFERS), min_value=0, max_value=15, step=1,
     help="A per-week ceiling, not the lever for 'how big a rehaul' — the "
@@ -153,6 +149,22 @@ manual_squad_input = st.sidebar.text_input(
     "Manual squad (15 comma-separated player IDs, optional)",
     help="Leave blank to fetch your live squad from Team ID instead.",
 )
+
+# Bank and free transfers are auto-fetched from your live FPL account once
+# you run the optimiser (see get_current_squad_and_bank) — showing editable
+# fields for them here unconditionally was misleading, since anything typed
+# in got silently overridden the moment a live squad fetch succeeded. Only
+# show them when there's no live account to fetch from (manual squad mode),
+# where they're the only source of truth available.
+if manual_squad_input.strip():
+    bank = st.sidebar.number_input("Bank (£m)", value=float(opt.BANK), step=0.1, format="%.1f")
+    free_transfers = st.sidebar.number_input(
+        "Free transfers", value=int(opt.FREE_TRANSFERS), min_value=0, max_value=15, step=1
+    )
+else:
+    bank, free_transfers = opt.BANK, opt.FREE_TRANSFERS
+    st.sidebar.caption("Bank and free transfers are auto-fetched live from your "
+                       "Team ID once you run the optimiser.")
 
 if st.sidebar.button("Refresh FPL data", help="Re-pulls bootstrap-static/fixtures from the API."):
     get_data(horizon_weeks, force_refresh=True)
@@ -224,56 +236,90 @@ def fixture_labels_for_week(df, fixtures, gw, week_offset):
 
 
 def risk_tag(info, p):
-    """A short, plain-language flag built entirely from columns
-    build_table() already computes — no new model logic, just making an
-    existing signal visible instead of buried in a column nobody looks at.
+    """A short, SELF-EXPLANATORY flag — shows FPL's own injury news and
+    percentage rather than a vague 'flagged', since 'doubtful' on its own
+    doesn't say what's actually wrong or what the model did about it.
+    `avail` (0.0-1.0, from fpl_stage0.availability()) is exactly the
+    multiplier already applied to this player's xPts — a player at 0.75
+    has already had their prediction cut by 25%, this tag is just making
+    that visible instead of buried in a column nobody looks at.
     'Impact sub' reuses the exact SUB_PATTERN_GAP threshold fpl_stage0
     itself uses to discount these players' minutes, so this tag and that
     scoring effect always agree with each other."""
     r = info.loc[p]
-    if r.get("avail", 1.0) < 1.0:
-        return "🔴 doubtful/flagged"
+    avail = r.get("avail", 1.0)
+    news = (r.get("news") or "").strip()
+    if avail <= 0.0:
+        return "🔴 ruled out" + (f" — {news}" if news else "")
+    if avail < 1.0:
+        if news:
+            return f"🟡 {news}"
+        chance = r.get("chance_of_playing_next_round")
+        pct = f"{int(chance)}%" if pd.notna(chance) else f"{avail:.0%}"
+        return f"🟡 {pct} chance of playing — xPts already cut to match"
     recent = r.get("recent_mins_share")
     starts = r.get("recent_start_share")
     if pd.notna(recent) and pd.notna(starts) and starts < recent - SUB_PATTERN_GAP:
-        return "⚠️ impact sub"
+        return "⚠️ impact sub (comes off the bench more than he starts)"
     if pd.notna(recent) and recent < 0.4:
-        return "⚠️ fringe"
+        return "⚠️ fringe (low recent minutes)"
     return ""
 
 
-def transfer_reason(info, p, fx_labels):
-    """One-line, plain-language summary of the drivers behind a player's
-    xPts — a translation of columns build_table() already computes, not a
-    new judgement of its own. Meant to answer 'why does the model like/
-    dislike this player', not just show the number."""
+def _profile_bits(info, p, fx_labels):
+    """Splits a player's profile into (positive, negative) plain-language
+    bits — kept separate because the SAME positive trait (e.g. nailed-on
+    starter) means something different depending on whether you're reading
+    it as a reason to bring someone IN or a reason to send them OUT, and
+    conflating the two produced nonsense like 'OUT: in-form, nailed-on
+    starter' which reads as an argument to KEEP them, not drop them."""
     r = info.loc[p]
-    bits = []
+    pos_bits, neg_bits = [], []
     fx = (fx_labels or {}).get(r["team"], "—")
     fdrs = [int(m) for m in re.findall(r"FDR(\d)", fx)] if fx and fx != "—" else []
     if fdrs:
         worst = max(fdrs)
         if worst <= 2:
-            bits.append(f"favourable fixture(s) ({fx})")
+            pos_bits.append(f"favourable fixture(s) ({fx})")
         elif worst >= 4:
-            bits.append(f"tough fixture(s) ({fx})")
+            neg_bits.append(f"tough fixture(s) ({fx})")
     mins = r.get("recent_mins_share", r.get("mins_share"))
     if pd.notna(mins):
         if mins >= 0.75:
-            bits.append("nailed-on starter")
+            pos_bits.append("nailed-on starter")
         elif mins < 0.4:
-            bits.append("rotation/bench risk")
+            neg_bits.append("rotation/bench risk")
     ppg_shrunk = r.get("ppg_shrunk", 0)
     if pd.notna(r.get("form")) and ppg_shrunk and ppg_shrunk > 0:
         if r["form"] > ppg_shrunk * 1.15:
-            bits.append("in-form")
+            pos_bits.append("in-form")
         elif r["form"] < ppg_shrunk * 0.7:
-            bits.append("out of form")
+            neg_bits.append("out of form")
     if r.get("set_piece_bonus", 0) > 0:
-        bits.append("on set-pieces")
+        pos_bits.append("on set-pieces")
     if r.get("avail", 1.0) < 1.0:
-        bits.append("fitness doubt")
-    return ", ".join(bits) if bits else "steady, unremarkable profile"
+        neg_bits.append("fitness doubt")
+    return pos_bits, neg_bits
+
+
+def transfer_reason_in(info, p, fx_labels):
+    """Why the model wants to BUY this player — its positive traits."""
+    pos_bits, _ = _profile_bits(info, p, fx_labels)
+    return ", ".join(pos_bits) if pos_bits else "steady, unremarkable profile — picked on value, not a standout trait"
+
+
+def transfer_reason_out(info, p, fx_labels):
+    """Why the model is happy to SELL this player. Deliberately only
+    surfaces NEGATIVE traits — the same profile function used for IN would
+    often list this player's genuine positives too (a fine, in-form player
+    can still be the correct sale if the budget's better spent elsewhere),
+    and showing those without that context just reads as self-contradictory
+    ('nailed-on starter, in-form' under a SELL heading). If there's no
+    actual red flag, say so plainly instead of implying one exists."""
+    _, neg_bits = _profile_bits(info, p, fx_labels)
+    if neg_bits:
+        return ", ".join(neg_bits)
+    return "no red flags on this pick — simply outscored by the incoming player for the budget, not a problem with them"
 
 
 def player_row(info, p, xpts_col="xpts", tag="", fx_labels=None):
@@ -326,31 +372,6 @@ def render_pitch(info, xi, bench, captain, xpts_col):
         st.caption("Bench: " + " · ".join(
             f"{info.loc[p, 'name']} ({info.loc[p, xpts_col]:.1f})" for p in bench_sorted
         ))
-
-
-def build_export_text(state):
-    """Plain-text week summary via st.code() (which has its own built-in
-    copy button) — for pasting into a mini-league group chat or a notes
-    app without screenshotting a dataframe."""
-    info = state["info"]
-    lines = [f"FPL GW{state['gw']} — {state['horizon']}-week plan"]
-    if not state["in_ids"]:
-        lines.append("Transfer: none — roll it.")
-    else:
-        lines.append(f"Transfer: {len(state['in_ids'])} in, {state['n_hits']} hit(s)")
-        for p in state["out_ids"]:
-            lines.append(f"  OUT: {info.loc[p, 'name']} (£{info.loc[p, 'price']:.1f}m)")
-        for p in state["in_ids"]:
-            lines.append(f"  IN:  {info.loc[p, 'name']} (£{info.loc[p, 'price']:.1f}m)")
-    cap_name = info.loc[state["captain"], "name"]
-    lines.append(f"Captain: {cap_name}")
-    lines.append(
-        f"Chips this week — Bench Boost +{state['bb'][0]:.1f}, "
-        f"Triple Captain +{state['tc'][0]:.1f}, "
-        f"Wildcard +{state['wc']:.1f} (over horizon), "
-        f"Free Hit +{state['fh']:.1f}"
-    )
-    return "\n".join(lines)
 
 
 def load_last_run():
@@ -662,13 +683,14 @@ if "results" in st.session_state:
 
         with st.expander("Why these transfers? (plain-language reasons)"):
             for p in s["out_ids"]:
-                st.caption(f"OUT **{info.loc[p, 'name']}** — {transfer_reason(info, p, s['fx_labels_wk0'])}")
+                st.caption(f"OUT **{info.loc[p, 'name']}** — {transfer_reason_out(info, p, s['fx_labels_wk0'])}")
             for p in s["in_ids"]:
-                st.caption(f"IN **{info.loc[p, 'name']}** — {transfer_reason(info, p, s['fx_labels_wk0'])}")
+                st.caption(f"IN **{info.loc[p, 'name']}** — {transfer_reason_in(info, p, s['fx_labels_wk0'])}")
             st.caption("Built entirely from the same columns the model already computes "
                        "(fixture difficulty, minutes share, form vs season average, "
                        "set-piece duty, fitness flags) — a translation of the number, "
-                       "not a second opinion on it.")
+                       "not a second opinion on it. OUT only lists actual red flags — a "
+                       "sale with none isn't a bad player, just outscored for the budget.")
 
     n_used_now = len(s["in_ids"])
     n_banked = opt.FREE_TRANSFERS - n_used_now
@@ -677,9 +699,6 @@ if "results" in st.session_state:
                     f"this week — banking {n_banked} for later (see the week-by-week "
                     f"plan below for when it thinks that pays off). This is the model's "
                     f"own decision now, not a hand-tuned setting.")
-
-    with st.expander("📋 Copy-paste summary"):
-        st.code(build_export_text(s), language=None)
 
     with st.expander("🕓 Diff vs your last saved run"):
         render_run_diff(s["last_run"], gw, s["in_names"], s["out_names"], s["plan_obj"])
