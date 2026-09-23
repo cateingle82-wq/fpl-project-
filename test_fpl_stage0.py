@@ -9,14 +9,23 @@ degrade gracefully) rather than re-testing ml_predict's own internals
 pre-existing code).
 """
 
+from datetime import date as _date, timedelta as _timedelta
+
 import pandas as pd
 
 import fpl_stage0 as fs0
 import ml_predict as mp
 
+# gw10's deadline is exactly 2026-10-10, one week apart either side —
+# matches the real-data example the confirmed-comeback restore logic was
+# verified against (an "Expected back 10 Oct" case).
+_GW10_DEADLINE = _date(2026, 10, 10)
+
 
 def make_boot():
-    events = [{"id": i, "is_next": i == 10, "finished": i < 10} for i in range(1, 15)]
+    events = [{"id": i, "is_next": i == 10, "finished": i < 10,
+               "deadline_time": (_GW10_DEADLINE + _timedelta(weeks=(i - 10))).isoformat() + "T18:00:00Z"}
+              for i in range(1, 15)]
     teams = [{"id": i, "short_name": f"T{i}",
               "strength_attack_home": 1300, "strength_attack_away": 1250,
               "strength_defence_home": 1200, "strength_defence_away": 1150}
@@ -241,6 +250,57 @@ def test_build_table_discounts_impact_substitute_pattern(monkeypatch):
         "must be discounted below the equal-minutes nailed starter"
     )
     print("10. build_table discounts an impact-substitute's mins_share vs an equal-minutes starter  OK")
+
+
+def test_parse_expected_return_extracts_a_real_date():
+    got = fs0.parse_expected_return("Hamstring injury - Expected back 10 Oct", "2026-09-12T18:00:08Z")
+    assert got == fs0.date(2026, 10, 10)
+    print("11. parse_expected_return extracts a real date from injury news     OK")
+
+
+def test_parse_expected_return_ignores_non_dates():
+    assert fs0.parse_expected_return("Back injury - Unknown return date", "2026-07-23T12:01:23Z") is None
+    assert fs0.parse_expected_return("Has joined Al Hilal permanently", "2026-09-04T12:34:46Z") is None
+    assert fs0.parse_expected_return(None, "2026-09-04T12:34:46Z") is None
+    print("12. parse_expected_return returns None for unparseable/non-injury news  OK")
+
+
+def test_parse_expected_return_rolls_over_to_next_year():
+    """News posted in November about a return '05 Jan' must resolve to
+    January of the FOLLOWING year, not a date already in the past."""
+    got = fs0.parse_expected_return("Knee injury - Expected back 05 Jan", "2026-11-20T18:00:08Z")
+    assert got == fs0.date(2027, 1, 5)
+    print("13. parse_expected_return rolls the year over correctly             OK")
+
+
+def test_build_table_restores_availability_after_confirmed_return(monkeypatch):
+    """A hard-out injured player (avail=0.0 for every week via the
+    existing status check) with a real 'Expected back' date within the
+    horizon must have their score RESTORED from the week they're
+    confirmed back, not stuck at 0.0 for the whole horizon."""
+    monkeypatch.setattr(fs0, "USE_ML_COLD_START", False)
+    monkeypatch.setattr(fs0, "USE_CALIBRATION", False)
+    monkeypatch.setattr(mp, "fetch_current_histories", lambda ids, **kw: {})
+
+    boot = make_boot()
+    boot["elements"][0]["status"] = "i"
+    boot["elements"][0]["chance_of_playing_next_round"] = 0
+    boot["elements"][0]["news"] = "Hamstring injury - Expected back 24 Oct"
+    boot["elements"][0]["news_added"] = "2026-09-12T18:00:08Z"
+
+    def get_with_injury(endpoint):
+        if endpoint == "bootstrap-static/":
+            return boot
+        return fake_get(endpoint)
+    monkeypatch.setattr(fs0, "get", get_with_injury)
+
+    df, gw = fs0.build_table()
+    row = df[df["id"] == 1].iloc[0]
+    assert row["expected_return"] == fs0.date(2026, 10, 24)
+    assert row["xw0"] == 0.0, "gw10 deadline (10 Oct) is before the 24 Oct return -- still out"
+    assert row["xw1"] == 0.0, "gw11 deadline (17 Oct) is before the 24 Oct return -- still out"
+    assert row["xw2"] > 0.0, "gw12 deadline (24 Oct) is ON the return date -- must be restored"
+    print("14. build_table restores availability from the confirmed return week onward  OK")
 
 
 if __name__ == "__main__":

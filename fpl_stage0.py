@@ -14,6 +14,8 @@ Run:  pip install requests pandas
 """
 
 import os
+import re
+from datetime import date, datetime
 
 import requests
 import numpy as np
@@ -277,6 +279,61 @@ def availability(row):
     return chance / 100.0
 
 
+# "Hamstring injury - Expected back 10 Oct" / "Back injury - Unknown
+# return date" / "Groin injury - 75% chance of playing" / a transfer
+# announcement ("Has joined X permanently") with no injury at all — see
+# parse_expected_return's docstring for what this is used for and why
+# chance_of_playing_next_round alone can't do the same job.
+_RETURN_DATE_RE = re.compile(r"[Ee]xpected back (\d{1,2}) (\w{3})")
+_MONTH_ABBR = {m: i + 1 for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+)}
+
+
+def parse_expected_return(news, news_added):
+    """
+    Extracts a real expected-RETURN date from the API's free-text `news`
+    field, when it contains one ("Hamstring injury - Expected back 10
+    Oct") — the only source of this information anywhere in the API.
+    chance_of_playing_next_round only ever answers "will they play THE
+    VERY NEXT gameweek", nothing about a specific week further into the
+    horizon; a player ruled out for a month currently looks IDENTICAL,
+    every single week, to one week-to-week doubtful, even though the
+    honest answer for week 4 of a 5-week horizon is "yes, they're back."
+
+    Returns None (not a guess) when the text doesn't contain a
+    parseable return date — "Unknown return date", a loan/transfer
+    announcement, an unusual date format, or no news at all. A None
+    here means "stay on the existing week-to-week avail estimate",
+    never "assume fit" or "assume out forever".
+
+    The API gives no year for the return date, so it's inferred
+    relative to news_added's own year — rolling over to the NEXT year
+    if the return month is earlier than the announcement month (news
+    posted in November about a return "10 Jan" means January of next
+    year, not a date already in the past).
+    """
+    if not news or not isinstance(news, str):
+        return None
+    m = _RETURN_DATE_RE.search(news)
+    if not m:
+        return None
+    day, month = int(m.group(1)), _MONTH_ABBR.get(m.group(2))
+    if month is None:
+        return None
+    if not news_added:
+        return None
+    try:
+        anchor = datetime.fromisoformat(str(news_added).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    year = anchor.year if month >= anchor.month else anchor.year + 1
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
 def set_piece_bonus(df):
     """Per-player flat points/game bonus for known penalty/free-kick/corner
     duty (see SET_PIECE_BONUS above). Missing columns (e.g. a synthetic
@@ -461,6 +518,18 @@ def build_table(horizon=HORIZON):
 
     df["avail"] = df.apply(availability, axis=1)
 
+    # A real expected-return date parsed from injury news, when one
+    # exists (see parse_expected_return's docstring) — used just below to
+    # zero out specifically the weeks a player is CONFIRMED still out for,
+    # instead of every week in the horizon getting the same flat avail
+    # discount regardless of how far away it is.
+    news_col = df["news"] if "news" in df.columns else pd.Series([None] * len(df), index=df.index)
+    news_added_col = (df["news_added"] if "news_added" in df.columns
+                       else pd.Series([None] * len(df), index=df.index))
+    df["expected_return"] = [
+        parse_expected_return(n, na) for n, na in zip(news_col, news_added_col)
+    ]
+
     # Fetched once, reused below both for the recent-minutes blend and (if
     # enabled) the ML cold-start section further down — same cache file, so
     # this costs nothing extra beyond what USE_ML_COLD_START was already
@@ -573,6 +642,45 @@ def build_table(horizon=HORIZON):
     if cal_factor != 1.0:
         for w in range(horizon):
             df[f"xw{w}"] = df[f"xw{w}"] * cal_factor
+
+    # Confirmed-comeback restore: a player with HARD_OUT status (injured/
+    # suspended) already gets avail=0.0 for EVERY week via availability()
+    # above — correct for as long as they're actually out, but that flat
+    # discount has no way to know when they're coming BACK, so a player
+    # confirmed to return in 3 weeks currently looks exactly as
+    # unavailable in week 4 of the horizon as week 0. Where a parseable
+    # return date exists (see parse_expected_return) and it falls ON OR
+    # BEFORE a given week's deadline, that week's score is recomputed as
+    # if avail were 1.0 (confirmed fit again) instead of the stale 0.0.
+    #
+    # mins_share_season (their typical involvement over HEALTHY stretches
+    # this season), not the current recency-blended mins_share, is used
+    # for the recovered estimate — mins_share right now is collapsed by
+    # the injury itself (weeks of 0 minutes), which would understate a
+    # returning regular starter. Known simplification: a first game back
+    # is often more limited than this suggests (a late cameo, an
+    # abundance-of-caution substitution) — there's no data field for
+    # "how eased-in will the comeback be", so this is a reasonable prior,
+    # not a promise.
+    gw_deadlines = {}
+    for e in boot.get("events", []):
+        dt_str = e.get("deadline_time")
+        if dt_str:
+            gw_deadlines[e["id"]] = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).date()
+    has_return_date = df["expected_return"].notna()
+    if has_return_date.any():
+        for w in range(horizon):
+            deadline = gw_deadlines.get(gw + w)
+            if deadline is None:
+                continue
+            recovered = has_return_date & (df["expected_return"] <= deadline)
+            if recovered.any():
+                df.loc[recovered, f"xw{w}"] = (
+                    (df.loc[recovered, "ppg_shrunk"] + df.loc[recovered, "set_piece_bonus"])
+                    * df.loc[recovered, "mins_share_season"]
+                    * fdr_scores[w].loc[recovered]
+                    * cal_factor
+                )
 
     # 'xpts' (horizon total) and 'xpts_gw1' (next week only) are now derived
     # sums/aliases of the per-week columns above, not separately computed —
