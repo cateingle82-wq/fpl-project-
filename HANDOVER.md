@@ -394,9 +394,37 @@ separately (`npx expo install react-dom react-native-web -- --legacy-peer-deps`)
 since the blank-typescript template doesn't include web support by
 default.
 
-**Not done, worth knowing**: no chip-strategy screen yet (the `POST
-/chips` client function exists in `api.ts`, unused so far), no pitch-view
-equivalent, no navigation beyond the two screens, no app icon/branding
-beyond the Expo template defaults, no tests. This is a first vertical
-slice (one real screen, real data, real error handling), not a port of
-everything `app.py` does.
+**Not done, worth knowing**: no pitch-view equivalent, no app
+icon/branding beyond the Expo template defaults, no tests. This is a
+first couple of vertical slices (real screens, real data, real error
+handling), not a port of everything `app.py` does.
+
+## `cateingle-f9` session, round 5: Chips screen (mobile/)
+
+Added `src/app/chips.tsx` — fetches `POST /chips` and renders Bench
+Boost/Triple Captain per-week values (★ marks the best week, same idea
+as `app.py`'s "Best week to..." caption) plus Wildcard/Free Hit gains,
+each with its 0-10 score and verdict. Registered in `_layout.tsx` and
+linked from the home screen's status row next to Settings.
+
+Confirmed the `ChipsResponse` TypeScript shape (written against `api.py`
+by reading its code, not by running it) is actually correct by curling
+`POST /chips` live and comparing the real JSON keys
+(`bench_boost.by_week`/`.score`, `wildcard.gain`/`.score`, etc.) against
+what `chips.tsx` expects — they matched exactly, which is also why
+`tsc --noEmit` passed cleanly against this screen on the first try.
+
+One real hiccup, expected and self-resolving: adding a new route file
+doesn't retroactively update Expo Router's TYPED route strings (used by
+`router.push("/chips")`) until the dev server runs once and regenerates
+`.expo/types/router.d.ts` — `tsc` correctly failed with `"/chips" is not
+assignable to...` until a `expo start --web` run regenerated that file.
+Not a bug, just something to know before assuming a typed-route error
+means the code is wrong.
+
+**Verified**: `tsc --noEmit` clean, `expo lint` clean, `expo-doctor`
+21/21, live `expo start --web` bundling cleanly (869 modules, up from
+858) against a real `uvicorn api:app --host 0.0.0.0`, confirmed the
+compiled bundle contains "Chip Strategy"/"Get Chip Values"/"Bench Boost".
+Same open gap as round 4: no browser tool connected in this session to
+click through interactively.

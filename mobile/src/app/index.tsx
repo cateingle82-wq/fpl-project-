@@ -60,9 +60,14 @@ export default function HomeScreen() {
         <Text style={styles.statusText}>
           {teamId ? `Team ${teamId}` : "No team set"} · {apiBaseUrl || "no API URL set"}
         </Text>
-        <Pressable onPress={() => router.push("/settings")}>
-          <Text style={styles.settingsLink}>Settings</Text>
-        </Pressable>
+        <View style={styles.linkRow}>
+          <Pressable onPress={() => router.push("/chips")}>
+            <Text style={styles.settingsLink}>Chips</Text>
+          </Pressable>
+          <Pressable onPress={() => router.push("/settings")}>
+            <Text style={styles.settingsLink}>Settings</Text>
+          </Pressable>
+        </View>
       </View>
 
       <Pressable
@@ -155,7 +160,8 @@ const styles = StyleSheet.create({
     flexDirection: "row", justifyContent: "space-between",
     alignItems: "center", marginBottom: 16,
   },
-  statusText: { color: "#666", fontSize: 13 },
+  statusText: { color: "#666", fontSize: 13, flexShrink: 1 },
+  linkRow: { flexDirection: "row", gap: 16 },
   settingsLink: { color: "#37003c", fontWeight: "600" },
   button: {
     backgroundColor: "#37003c", borderRadius: 8, padding: 14,
