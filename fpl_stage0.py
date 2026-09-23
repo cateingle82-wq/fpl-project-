@@ -84,6 +84,20 @@ USE_RECENT_MINUTES = True
 RECENT_GAMES_WINDOW = 4     # how many of the player's most recent games to look at
 RECENT_MINUTES_WEIGHT = 0.6  # weight on the recent window vs the season-long mins_share
 
+# recent_mins_share alone can't tell apart two players with identical
+# recent minutes but very different reliability: a nailed starter rested
+# for one game, vs an impact substitute who gets the same total minutes
+# in 15-30 minute cameos every week. The latter has real week-to-week
+# blank risk mins_share can't see (an unused-sub week scores 0, and a
+# start isn't guaranteed even when they do get minutes) — recent_start_
+# share (fraction of recent games actually STARTED, not just featured)
+# is the signal that distinguishes them. Only applied when there's a
+# real gap between the two (minutes coming disproportionately from sub
+# appearances, not starts) — a small gap is normal squad-rotation noise,
+# not a real substitute pattern worth discounting for.
+SUB_PATTERN_GAP = 0.15       # recent_start_share below recent_mins_share by more than this -> flagged
+SUB_PATTERN_DISCOUNT = 0.85  # mins_share multiplier applied when flagged — a modest, not punitive, haircut
+
 # For players with very little data this season (new signings, promoted-
 # team players, the first couple of gameweeks), use the trained ML model
 # (ml_predict.py) instead of the shrinkage heuristic above — see
@@ -296,6 +310,28 @@ def recent_mins_share(element_ids, histories, n=RECENT_GAMES_WINDOW):
     return out
 
 
+def recent_start_share(element_ids, histories, n=RECENT_GAMES_WINDOW):
+    """id -> fraction of the player's last `n` played games they actually
+    STARTED (not just featured) — see SUB_PATTERN_GAP's comment for why
+    this is a genuinely different signal from recent_mins_share, not a
+    duplicate of it. Same source data as recent_mins_share (no extra API
+    calls); a player missing history, or whose rows don't carry a
+    `starts` field at all (should always be present live, but kept
+    defensive to match recent_mins_share's own style), is left out of
+    the result the same way."""
+    out = {}
+    for pid in element_ids:
+        hist = histories.get(str(pid)) or histories.get(pid)
+        if not hist:
+            continue
+        recent = hist[-n:]
+        starts = [h.get("starts") for h in recent if h.get("starts") is not None]
+        if not starts:
+            continue
+        out[pid] = sum(starts) / len(starts)
+    return out
+
+
 def calibration_factor(path=CALIBRATION_RESULTS_PATH, min_gameweeks=MIN_CALIBRATION_GAMEWEEKS):
     """
     A single multiplicative correction for every xw{w}/xpts value, i.e.
@@ -447,6 +483,18 @@ def build_table(horizon=HORIZON):
             RECENT_MINUTES_WEIGHT * df.loc[has_recent, "recent_mins_share"].clip(upper=1.0)
             + (1 - RECENT_MINUTES_WEIGHT) * df.loc[has_recent, "mins_share_season"]
         )
+
+        # Impact-substitute discount: same recent minutes, but coming
+        # disproportionately from sub appearances rather than starts —
+        # see SUB_PATTERN_GAP's comment for why this is worth catching
+        # separately from the mins_share blend above.
+        start_share = recent_start_share(df["id"].tolist(), histories)
+        df["recent_start_share"] = df["id"].map(start_share)
+        sub_pattern = (
+            df["recent_mins_share"].notna() & df["recent_start_share"].notna()
+            & (df["recent_start_share"] < df["recent_mins_share"] - SUB_PATTERN_GAP)
+        )
+        df.loc[sub_pattern, "mins_share"] = df.loc[sub_pattern, "mins_share"] * SUB_PATTERN_DISCOUNT
 
     df["set_piece_bonus"] = set_piece_bonus(df)
 

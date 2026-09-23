@@ -204,6 +204,45 @@ def test_build_table_applies_calibration_when_enabled(monkeypatch, tmp_path):
     print("8. build_table actually applies the calibration factor to xw{w}     OK")
 
 
+def test_recent_start_share_computes_fraction_of_recent_starts():
+    histories = {
+        "1": [{"starts": 1}, {"starts": 0}, {"starts": 1}, {"starts": 1}],  # 3/4 started
+        "2": [{"starts": 0}, {"starts": 0}],  # 0/2 started, fewer than the full window
+    }
+    result = fs0.recent_start_share([1, 2, 3], histories, n=4)
+    assert abs(result[1] - 0.75) < 1e-9
+    assert abs(result[2] - 0.0) < 1e-9
+    assert 3 not in result, "no history at all -> left out, not zero-filled"
+    print("9. recent_start_share computes fraction of recent games started    OK")
+
+
+def test_build_table_discounts_impact_substitute_pattern(monkeypatch):
+    """A player with decent recent minutes but ZERO recent starts (a pure
+    impact substitute) must get a lower mins_share than the exact same
+    recent minutes would give a nailed starter — the discount this
+    feature adds on top of recent_mins_share, which can't tell them
+    apart on minutes alone."""
+    monkeypatch.setattr(fs0, "get", fake_get)
+    monkeypatch.setattr(fs0, "USE_ML_COLD_START", False)
+    monkeypatch.setattr(fs0, "USE_CALIBRATION", False)
+
+    # id 1: 40 min/game every game, always as a substitute (0 starts).
+    # id 2: the SAME 40 min/game every game, always as a starter.
+    sub_hist = [{"round": r, "minutes": 40, "starts": 0} for r in range(10, 14)]
+    starter_hist = [{"round": r, "minutes": 40, "starts": 1} for r in range(10, 14)]
+    histories = {"1": sub_hist, "2": starter_hist}
+    monkeypatch.setattr(mp, "fetch_current_histories", lambda ids, **kw: histories)
+
+    df, gw = fs0.build_table()
+    row_sub = df[df["id"] == 1].iloc[0]
+    row_starter = df[df["id"] == 2].iloc[0]
+    assert row_sub["mins_share"] < row_starter["mins_share"], (
+        "identical recent minutes, but the impact-substitute pattern "
+        "must be discounted below the equal-minutes nailed starter"
+    )
+    print("10. build_table discounts an impact-substitute's mins_share vs an equal-minutes starter  OK")
+
+
 if __name__ == "__main__":
     class _MP:
         def setattr(self, obj, name, value):
