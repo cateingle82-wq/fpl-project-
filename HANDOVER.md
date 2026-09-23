@@ -166,6 +166,59 @@ Not tracked in git (regenerate locally, see `.gitignore` for why):
   dominate by a wide margin. The next real lever for the ML path is a
   better minutes/rotation-risk signal, not more scoring features.
 
+## `cateingle-f9` session, round 2: dashboard UX (app.py)
+
+After the ML retrain above, moved to `app.py` (with `cateingle-7c`'s
+agreement — it was idle, notified before starting, file split otherwise
+unchanged: `chips.py`/`fpl_stage0.py` still untouched by this session).
+User explicitly asked for UX over more model/backtest work. Eight
+changes, all pure rendering/translation of existing columns — no model
+logic changed:
+
+1. **"Why" reasoning** — a plain-language one-liner per transfer (fixture
+   difficulty, minutes share, form vs season average, set-piece duty,
+   fitness flags), built from columns `build_table()` already computes.
+   Not a second opinion on the number, a translation of it.
+2. **Risk tag column** (`risk_tag()`) added to every player table —
+   reuses `fpl_stage0.SUB_PATTERN_GAP`'s own threshold for "impact sub"
+   so this tag and that scoring discount always agree.
+3. **What-if slider** — rescales a single player's own `xw0` by an
+   assumed minutes share. Explicitly NOT a re-solve of the optimiser
+   (caption says so) — a sensitivity check, not a new recommendation.
+4. **Deadline countdown** — top of page, independent of the "Run
+   optimiser" click (a clock shouldn't need a solve).
+5. **Copy-paste export** (`build_export_text`) via `st.code()`.
+6. **Diff vs last saved run** — persisted to `last_run_snapshot.json`
+   (gitignored, per-machine state) so it survives across sessions, not
+   just Streamlit reruns.
+7. **Pitch view** (`render_pitch`) — GK/DEF/MID/FWD laid out as an actual
+   formation via `st.columns` + a theme-neutral rgba HTML card, not a
+   dataframe.
+8. **Gamified backtest framing** — "beat a random XI in N of M
+   gameweeks" alongside the existing raw Spearman/top11 numbers in Model
+   Health.
+
+**Architecture change required for #3/#7 to work at all**: the whole
+render path moved from living inside `if st.button("Run optimiser"):` to
+storing every result in `st.session_state["results"]` on click, with
+rendering happening from that state on EVERY rerun. Reason: Streamlit
+reruns the whole script on any widget interaction (e.g. the what-if
+slider), and code that only lived inside the button's `if` block would
+vanish the instant you touched any OTHER widget on the page, since the
+button only evaluates `True` on the literal click event. This does NOT
+change when the solver itself re-runs — only on a fresh "Run optimiser"
+click, same as before.
+
+**Verified**: `python -m pytest -q` (46 passed) plus
+`streamlit.testing.v1.AppTest` driving a real "Run optimiser" click
+against live FPL data — confirmed no exceptions and real rendered output
+for all 8 features (deadline banner, reasoning captions, pitch-view HTML,
+what-if metrics, diff caption, gamified backtest line). Test runs wrote
+throwaway rows into `chip_log.csv`/`last_run_snapshot.json` — the
+`chip_log.csv` pollution was reverted (`git checkout`) before committing;
+`last_run_snapshot.json` is gitignored so its test content never reached
+git.
+
 ## Running things
 
 ```bash

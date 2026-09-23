@@ -20,6 +20,11 @@ fpl_snapshot.csv
 # would show as a full-file change with no readable diff).
 ml_model.joblib
 
+# Per-machine "last run" state for the dashboard's diff-vs-last-run
+# feature — regenerates on the next run, and its whole point is to be
+# THIS machine's most recent run, not a synced/shared value.
+last_run_snapshot.json
+
 # Keep: all your .py files, test_*.py, the small result CSVs
 # (backtest_results.csv, chip_log.csv, ml_holdout_results.csv) — those are
 # small and genuinely useful to see change over time in git history.
