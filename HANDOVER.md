@@ -130,12 +130,19 @@ Not tracked in git (regenerate locally, see `.gitignore` for why):
 
 ## Known issues / things to watch
 
-- **`test_optimise.py` run standalone (`python test_optimise.py`) hangs**
-  in this environment — reproduced independently of disk space. Not
-  pytest-collected (no `test_*` functions, only a `run_all_checks()`
-  called from `__main__`), so it doesn't affect the CI-relevant test
-  suite, but worth debugging before relying on it again. Root cause not
-  found this session.
+- **`test_optimise.py` run standalone — RESOLVED, was never actually
+  hanging.** It's a genuinely slow (not infinite) MILP: watched the real
+  `cbc` subprocess directly (99% CPU, not stuck/deadlocked) and let it run
+  to completion — all 13 checks passed in a few minutes, most of that on
+  check 2's cold-start solve (building a legal 15-man squad from scratch,
+  `MAX_TRANSFERS=15`, ~260 similarly-priced synthetic candidates — no
+  owned squad to anchor the search, and lots of near-tied candidates,
+  which is exactly what blows up a branch-and-bound tree). It only ever
+  *looked* hung because it exceeds most tool runners' ~2 minute default
+  timeout. Not pytest-collected (no `test_*` functions, only
+  `run_all_checks()` from `__main__`), so this never affected the
+  CI-relevant suite. No code changes needed — just don't run this one
+  under a short timeout.
 - **Solve time scales badly with horizon**: ~2s at horizon 5, ~35s at
   horizon 6 on the real squad (not gradual — a step change). Worth
   profiling if anyone wants to push the horizon slider higher; likely the
