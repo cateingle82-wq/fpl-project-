@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field
 
 import chips
 import fpl_optimise as opt
-from fpl_stage0 import HORIZON, build_table, horizon_of, next_gameweek
+from fpl_stage0 import HORIZON, SUB_PATTERN_GAP, build_table, fixture_details, horizon_of, next_gameweek
 
 app = FastAPI(
     title="FPL Optimiser API",
@@ -76,6 +76,10 @@ def get_table(horizon):
 
 def get_bootstrap():
     return _cached("bootstrap", ttl=300, fn=lambda: opt.get("bootstrap-static/"))
+
+
+def get_fixtures():
+    return _cached("fixtures", ttl=300, fn=lambda: opt.get("fixtures/"))
 
 
 # ----------------------------------------------------------------------------
@@ -167,11 +171,57 @@ def resolve_squad(req: SquadRequest, gw: int):
     return ids, bank_t, free_transfers
 
 
-def player_summary(info, p, xpts_col="xpts", extra=None):
+def fixture_labels_for_week(df, fixtures, gw, week_offset):
+    """team_id -> 'OPP (H/A) FDRx' for one specific week (a double shows
+    both fixtures, a blank shows '—') — same approach app.py's own
+    fixture_labels_for_week uses (duplicated here rather than imported:
+    app.py is a Streamlit script that runs UI-building code at module
+    level just by being imported, so it can't be a shared dependency)."""
+    teams_map = dict(zip(df["team"], df["team_name"]))
+    details = fixture_details(fixtures, gw + week_offset, 1)
+    labels = {}
+    for team_id, entries in details.items():
+        labels[team_id] = " + ".join(
+            f"{teams_map.get(opp_id, '?')} ({'H' if was_home else 'A'}) FDR{fdr}"
+            for fdr, opp_id, was_home in entries
+        )
+    return labels
+
+
+def player_risk(info, p):
+    """Structured injury/rotation-risk info — a client-side rendering
+    decision (icon, color, tap-to-expand) shouldn't be baked into a
+    pre-formatted string, so this returns level + detail separately.
+    `level` is one of: out, doubtful, impact_sub, fringe, ok. Same
+    underlying signals and SUB_PATTERN_GAP threshold as app.py's own
+    risk_tag (duplicated for the same reason as fixture_labels_for_week
+    above), so this and the Streamlit dashboard never disagree about
+    what counts as a risk."""
+    r = info.loc[p]
+    avail = r.get("avail", 1.0)
+    news = (r.get("news") or "").strip() or None
+    if avail <= 0.0:
+        return {"level": "out", "detail": news or "Ruled out this gameweek"}
+    if avail < 1.0:
+        chance = r.get("chance_of_playing_next_round")
+        pct = f"{int(chance)}%" if pd.notna(chance) else f"{avail:.0%}"
+        return {"level": "doubtful", "detail": news or f"{pct} chance of playing"}
+    recent = r.get("recent_mins_share")
+    starts = r.get("recent_start_share")
+    if pd.notna(recent) and pd.notna(starts) and starts < recent - SUB_PATTERN_GAP:
+        return {"level": "impact_sub", "detail": "Comes off the bench more than he starts — impact-sub pattern"}
+    if pd.notna(recent) and recent < 0.4:
+        return {"level": "fringe", "detail": "Low recent minutes — fringe squad player"}
+    return {"level": "ok", "detail": None}
+
+
+def player_summary(info, p, xpts_col="xpts", extra=None, fx_labels=None):
     r = info.loc[p]
     out = {
         "id": int(p), "name": r["name"], "pos": r["pos"], "team": r["team_name"],
         "price": round(float(r["price"]), 1), "xpts": round(float(r[xpts_col]), 2),
+        "risk": player_risk(info, p),
+        "fixture": (fx_labels or {}).get(r["team"], "—"),
     }
     if extra:
         out.update(extra)
@@ -220,13 +270,18 @@ def squad(team_id: int):
 @app.post("/recommend")
 def recommend(req: SquadRequest):
     """The main endpoint: solve Stage A + Stage B and return the transfer
-    recommendation, starting XI, and bench — the same computation app.py's
-    'Run optimiser' button drives, minus the chip evaluation (see /chips)
-    so a client can fetch them separately/in parallel if it wants to."""
+    recommendation, starting XI, and bench for week 0 (the only REAL
+    decision — see build_problem's docstring), PLUS a `plan` array
+    covering every week of the horizon (Stage A's own forward-looking
+    hypothesis, same as app.py's per-week tabs) so a client can build a
+    week-by-week scroll through the whole plan, not just this week's
+    move. Minus the chip evaluation (see /chips) so a client can fetch
+    that separately/in parallel if it wants to."""
     df, gw = get_table(req.horizon)
     horizon = horizon_of(df)
     current_ids, bank_t, free_transfers = resolve_squad(req, gw)
     config = req.config.to_optimiser_config(free_transfers)
+    fixtures = get_fixtures()
 
     prob, sq, start, cap, hits, ft, tin, tout, cost_t, budget_t = opt.build_problem(
         df, current_ids, bank_t, config
@@ -243,6 +298,7 @@ def recommend(req: SquadRequest):
     chosen = [p for p in df["id"] if sq[0][p].value() > 0.5]
     xi, captain = opt.choose_lineup(df, chosen)
     info = df.set_index("id")
+    fx_labels_wk0 = fixture_labels_for_week(df, fixtures, gw, 0)
 
     current = set(current_ids)
     out_ids = sorted(current - set(chosen), key=lambda p: -info.loc[p, "xpts"])
@@ -250,22 +306,57 @@ def recommend(req: SquadRequest):
     n_hits = int(round(hits[0].value()))
     bench = [p for p in chosen if p not in xi]
 
+    # Per-week plan — mirrors app.py's week_data/week_transfer_info loop.
+    # Week 0 gets no transferred_in/out/hits fields (that's the
+    # `transfers` block above); weeks 1+ show what changes from the
+    # PREVIOUS week in the plan, same convention app.py's tabs use.
+    plan = []
+    prev_squad = None
+    for w in range(horizon):
+        if w == 0:
+            squad_w, xi_w, cap_w = chosen, xi, captain
+        else:
+            squad_w = [p for p in df["id"] if sq[w][p].value() > 0.5]
+            xi_w = [p for p in squad_w if start[w][p].value() > 0.5]
+            cap_w = next(p for p in squad_w if cap[w][p].value() > 0.5)
+        bench_w = [p for p in squad_w if p not in xi_w]
+        fx_labels_w = fixture_labels_for_week(df, fixtures, gw, w)
+        xpts_col = f"xw{w}"
+
+        entry = {
+            "week_offset": w,
+            "gw": gw + w,
+            "captain": player_summary(info, cap_w, xpts_col, fx_labels=fx_labels_w),
+            "xi": [player_summary(info, p, xpts_col, {"captain": p == cap_w}, fx_labels_w) for p in xi_w],
+            "bench": [player_summary(info, p, xpts_col, fx_labels=fx_labels_w) for p in bench_w],
+        }
+        if prev_squad is not None:
+            transferred_in = set(squad_w) - set(prev_squad)
+            transferred_out = set(prev_squad) - set(squad_w)
+            entry["transferred_in"] = [player_summary(info, p, xpts_col, fx_labels=fx_labels_w) for p in transferred_in]
+            entry["transferred_out"] = [player_summary(info, p, fx_labels=fx_labels_w) for p in transferred_out]
+            entry["hits"] = int(round(hits[w].value()))
+            entry["free_transfers_available"] = free_transfers if w == 0 else int(round(ft[w].value()))
+        plan.append(entry)
+        prev_squad = squad_w
+
     return {
         "gw": gw,
         "horizon": horizon,
         "objective": round(pulp.value(prob.objective), 2),
         "average_per_gw": round(pulp.value(prob.objective) / horizon, 2),
         "transfers": {
-            "out": [player_summary(info, p) for p in out_ids],
-            "in": [player_summary(info, p) for p in in_ids],
+            "out": [player_summary(info, p, fx_labels=fx_labels_wk0) for p in out_ids],
+            "in": [player_summary(info, p, fx_labels=fx_labels_wk0) for p in in_ids],
             "hits": n_hits,
             "hit_cost_paid": n_hits * config.hit_cost,
         },
-        "captain": player_summary(info, captain, "xw0"),
-        "xi": [player_summary(info, p, "xw0", {"captain": p == captain}) for p in xi],
-        "bench": [player_summary(info, p, "xw0") for p in bench],
+        "captain": player_summary(info, captain, "xw0", fx_labels=fx_labels_wk0),
+        "xi": [player_summary(info, p, "xw0", {"captain": p == captain}, fx_labels_wk0) for p in xi],
+        "bench": [player_summary(info, p, "xw0", fx_labels=fx_labels_wk0) for p in bench],
         "squad_cost": round(sum(cost_t[p] for p in chosen) / 10, 1),
         "budget": round(budget_t / 10, 1),
+        "plan": plan,
     }
 
 

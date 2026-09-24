@@ -4,10 +4,13 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
   DEFAULT_API_BASE_URL,
+  DEFAULT_HORIZON,
   getApiBaseUrl,
   setApiBaseUrl,
   getTeamId,
   setTeamId,
+  getHorizon,
+  setHorizon,
 } from "@/lib/config";
 import { colors, spacing, radius, type } from "@/lib/theme";
 import { Card, PrimaryButton } from "@/components/ui";
@@ -15,6 +18,7 @@ import { Card, PrimaryButton } from "@/components/ui";
 export default function SettingsScreen() {
   const [apiBaseUrl, setApiBaseUrlInput] = useState(DEFAULT_API_BASE_URL);
   const [teamId, setTeamIdInput] = useState("");
+  const [horizon, setHorizonInput] = useState(String(DEFAULT_HORIZON));
   const [loaded, setLoaded] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -22,6 +26,7 @@ export default function SettingsScreen() {
     (async () => {
       setApiBaseUrlInput(await getApiBaseUrl());
       setTeamIdInput(await getTeamId());
+      setHorizonInput(String(await getHorizon()));
       setLoaded(true);
     })();
   }, []);
@@ -31,8 +36,14 @@ export default function SettingsScreen() {
       Alert.alert("Invalid Team ID", "Team ID must be a number — it's the number in your FPL team's URL.");
       return;
     }
+    const horizonNum = Number(horizon.trim());
+    if (!Number.isInteger(horizonNum) || horizonNum < 1 || horizonNum > 8) {
+      Alert.alert("Invalid Horizon", "Horizon must be a whole number between 1 and 8 weeks.");
+      return;
+    }
     await setApiBaseUrl(apiBaseUrl);
     await setTeamId(teamId);
+    await setHorizon(horizonNum);
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 1800);
   }
@@ -72,6 +83,23 @@ export default function SettingsScreen() {
             placeholderTextColor={colors.textSecondary}
           />
           <Text style={styles.hint}>The number in your FPL team&apos;s URL.</Text>
+        </Card>
+
+        <Card>
+          <Text style={styles.label}>Planning horizon (weeks)</Text>
+          <TextInput
+            style={styles.input}
+            value={horizon}
+            onChangeText={setHorizonInput}
+            keyboardType="number-pad"
+            placeholder={String(DEFAULT_HORIZON)}
+            placeholderTextColor={colors.textSecondary}
+          />
+          <Text style={styles.hint}>
+            How many gameweeks ahead the optimiser plans over (1-8). A longer horizon lets it
+            reason about banking a transfer now for a bigger swap later — see the Weekly Plan
+            scroll on the Squad tab.
+          </Text>
         </Card>
 
         <PrimaryButton label={savedFlash ? "Saved ✓" : "Save"} onPress={save} />

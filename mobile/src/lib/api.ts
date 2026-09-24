@@ -50,6 +50,13 @@ async function request<T>(baseUrl: string, path: string, init?: RequestInit): Pr
 // Shapes — mirrors api.py's actual return dicts.
 // ---------------------------------------------------------------------------
 
+export type RiskLevel = "out" | "doubtful" | "impact_sub" | "fringe" | "ok";
+
+export interface PlayerRisk {
+  level: RiskLevel;
+  detail: string | null;
+}
+
 export interface PlayerSummary {
   id: number;
   name: string;
@@ -57,7 +64,24 @@ export interface PlayerSummary {
   team: string;
   price: number;
   xpts: number;
+  risk: PlayerRisk;
+  fixture: string;
   captain?: boolean;
+}
+
+export interface PlanWeek {
+  week_offset: number;
+  gw: number;
+  captain: PlayerSummary;
+  xi: PlayerSummary[];
+  bench: PlayerSummary[];
+  // Absent on week 0 (that's the top-level `transfers` block instead) —
+  // present from week 1 on, describing the change from the PREVIOUS
+  // week in the plan.
+  transferred_in?: PlayerSummary[];
+  transferred_out?: PlayerSummary[];
+  hits?: number;
+  free_transfers_available?: number;
 }
 
 export interface RecommendResponse {
@@ -76,6 +100,7 @@ export interface RecommendResponse {
   bench: PlayerSummary[];
   squad_cost: number;
   budget: number;
+  plan: PlanWeek[];
 }
 
 export interface ChipScore {

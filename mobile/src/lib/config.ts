@@ -18,9 +18,14 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 const KEYS = {
   apiBaseUrl: "fpl.apiBaseUrl",
   teamId: "fpl.teamId",
+  horizon: "fpl.horizon",
 } as const;
 
 export const DEFAULT_API_BASE_URL = "http://localhost:8000";
+// Matches fpl_stage0.HORIZON's own default — NOT the same as the "3" the
+// very first version of this screen hardcoded in its fetch calls, which
+// was an arbitrary placeholder, not a real backend default.
+export const DEFAULT_HORIZON = 5;
 
 export async function getApiBaseUrl(): Promise<string> {
   const stored = await AsyncStorage.getItem(KEYS.apiBaseUrl);
@@ -38,4 +43,14 @@ export async function getTeamId(): Promise<string> {
 
 export async function setTeamId(teamId: string): Promise<void> {
   await AsyncStorage.setItem(KEYS.teamId, teamId.trim());
+}
+
+export async function getHorizon(): Promise<number> {
+  const stored = await AsyncStorage.getItem(KEYS.horizon);
+  const n = stored ? Number(stored) : DEFAULT_HORIZON;
+  return Number.isFinite(n) && n >= 1 && n <= 8 ? n : DEFAULT_HORIZON;
+}
+
+export async function setHorizon(horizon: number): Promise<void> {
+  await AsyncStorage.setItem(KEYS.horizon, String(horizon));
 }

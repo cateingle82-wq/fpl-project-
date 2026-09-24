@@ -1,17 +1,18 @@
 import { useCallback, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import Ionicons from "@expo/vector-icons/Ionicons";
 
-import { getApiBaseUrl, getTeamId } from "@/lib/config";
-import { postRecommend, RecommendResponse, ApiError } from "@/lib/api";
+import { getApiBaseUrl, getTeamId, getHorizon } from "@/lib/config";
+import { postRecommend, RecommendResponse, PlanWeek, ApiError } from "@/lib/api";
 import { colors, spacing, type } from "@/lib/theme";
 import { Card, SectionTitle, PrimaryButton, Metric, PlayerRow } from "@/components/ui";
 
 export default function HomeScreen() {
   const [teamId, setTeamId] = useState("");
   const [result, setResult] = useState<RecommendResponse | null>(null);
+  const [selectedWeek, setSelectedWeek] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,6 +25,7 @@ export default function HomeScreen() {
   async function fetchRecommendation() {
     const baseUrl = await getApiBaseUrl();
     const id = await getTeamId();
+    const horizon = await getHorizon();
     if (!id) {
       setError("Set your Team ID in the Settings tab first.");
       return;
@@ -31,7 +33,9 @@ export default function HomeScreen() {
     setLoading(true);
     setError(null);
     try {
-      setResult(await postRecommend(baseUrl, { team_id: Number(id), horizon: 3 }));
+      const data = await postRecommend(baseUrl, { team_id: Number(id), horizon });
+      setResult(data);
+      setSelectedWeek(0);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Something went wrong.");
     } finally {
@@ -62,14 +66,24 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {result && <ResultView result={result} />}
+        {result && (
+          <ResultView result={result} selectedWeek={selectedWeek} onSelectWeek={setSelectedWeek} />
+        )}
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function ResultView({ result }: { result: RecommendResponse }) {
+function ResultView({
+  result, selectedWeek, onSelectWeek,
+}: {
+  result: RecommendResponse;
+  selectedWeek: number;
+  onSelectWeek: (w: number) => void;
+}) {
   const { transfers } = result;
+  const week: PlanWeek = result.plan[selectedWeek];
+
   return (
     <View>
       <Card style={styles.headerCard}>
@@ -82,7 +96,7 @@ function ResultView({ result }: { result: RecommendResponse }) {
         </View>
       </Card>
 
-      <SectionTitle>Transfers</SectionTitle>
+      <SectionTitle>This Week&apos;s Transfer</SectionTitle>
       <Card>
         {transfers.out.length === 0 ? (
           <Text style={type.body}>No transfer — roll it.</Text>
@@ -110,14 +124,55 @@ function ResultView({ result }: { result: RecommendResponse }) {
         )}
       </Card>
 
+      <SectionTitle>Weekly Plan</SectionTitle>
+      <Text style={styles.planCaption}>
+        Only THIS week&apos;s transfer above is real — everything here beyond it is the
+        model&apos;s own forward-looking plan, re-solved fresh every week.
+      </Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weekScroll}>
+        {result.plan.map((w) => (
+          <Pressable
+            key={w.week_offset}
+            style={[styles.weekPill, selectedWeek === w.week_offset && styles.weekPillActive]}
+            onPress={() => onSelectWeek(w.week_offset)}
+          >
+            <Text style={[styles.weekPillText, selectedWeek === w.week_offset && styles.weekPillTextActive]}>
+              GW{w.gw}
+            </Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+
+      {week.transferred_in !== undefined && (
+        <Card style={styles.planChangeCard}>
+          {week.transferred_in.length === 0 && week.transferred_out!.length === 0 ? (
+            <Text style={type.caption}>No change from the previous week.</Text>
+          ) : (
+            <>
+              <Text style={styles.planChangeTitle}>
+                Planned transfer: {week.hits! > 0
+                  ? `${week.transferred_out!.length} in, ${week.hits} hit(s)`
+                  : "free"}
+              </Text>
+              {week.transferred_out!.map((p) => (
+                <Text key={p.id} style={type.caption}>OUT {p.name}</Text>
+              ))}
+              {week.transferred_in.map((p) => (
+                <Text key={p.id} style={type.caption}>IN {p.name}</Text>
+              ))}
+            </>
+          )}
+        </Card>
+      )}
+
       <SectionTitle>Captain</SectionTitle>
-      <Card><PlayerRow player={result.captain} /></Card>
+      <Card><PlayerRow player={week.captain} /></Card>
 
       <SectionTitle>Starting XI</SectionTitle>
-      <Card>{result.xi.map((p) => <PlayerRow key={p.id} player={p} />)}</Card>
+      <Card>{week.xi.map((p) => <PlayerRow key={p.id} player={p} />)}</Card>
 
       <SectionTitle>Bench</SectionTitle>
-      <Card>{result.bench.map((p) => <PlayerRow key={p.id} player={p} subtle />)}</Card>
+      <Card>{week.bench.map((p) => <PlayerRow key={p.id} player={p} subtle />)}</Card>
     </View>
   );
 }
@@ -145,4 +200,16 @@ const styles = StyleSheet.create({
   transferCols: { flexDirection: "row", gap: spacing.md },
   transferCol: { flex: 1 },
   transferHeader: { ...type.metricLabel, marginBottom: spacing.xs },
+  planCaption: { ...type.caption, marginBottom: spacing.sm, lineHeight: 16 },
+  weekScroll: { marginBottom: spacing.sm },
+  weekPill: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999,
+    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+    marginRight: spacing.sm,
+  },
+  weekPillActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  weekPillText: { fontWeight: "600", fontSize: 13, color: colors.textPrimary },
+  weekPillTextActive: { color: colors.textOnPrimary },
+  planChangeCard: { backgroundColor: "#f0e6f1" },
+  planChangeTitle: { fontWeight: "700", fontSize: 13, color: colors.primary, marginBottom: 4 },
 });

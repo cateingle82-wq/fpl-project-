@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Ionicons from "@expo/vector-icons/Ionicons";
 
-import { getApiBaseUrl, getTeamId } from "@/lib/config";
+import { getApiBaseUrl, getTeamId, getHorizon } from "@/lib/config";
 import { postChips, ChipsResponse, ChipScore, ApiError } from "@/lib/api";
 import { colors, spacing, type } from "@/lib/theme";
 import { Card, PrimaryButton, ScoreBadge } from "@/components/ui";
@@ -16,6 +16,7 @@ export default function ChipsScreen() {
   async function fetchChips() {
     const baseUrl = await getApiBaseUrl();
     const id = await getTeamId();
+    const horizon = await getHorizon();
     if (!id) {
       setError("Set your Team ID in the Settings tab first.");
       return;
@@ -23,7 +24,7 @@ export default function ChipsScreen() {
     setLoading(true);
     setError(null);
     try {
-      setResult(await postChips(baseUrl, { team_id: Number(id), horizon: 3 }));
+      setResult(await postChips(baseUrl, { team_id: Number(id), horizon }));
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Something went wrong.");
     } finally {

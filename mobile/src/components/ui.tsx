@@ -4,9 +4,17 @@
  * having them in one place makes it obvious when a screen is about to
  * duplicate styling instead of reusing it.
  */
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { colors, spacing, radius, type, shadow, positionColors } from "@/lib/theme";
-import type { PlayerSummary } from "@/lib/api";
+import type { PlayerSummary, RiskLevel } from "@/lib/api";
+
+const RISK_STYLE: Record<Exclude<RiskLevel, "ok">, { icon: keyof typeof Ionicons.glyphMap; color: string }> = {
+  out: { icon: "close-circle", color: colors.danger },
+  doubtful: { icon: "alert-circle", color: "#ffb020" },
+  impact_sub: { icon: "swap-horizontal", color: "#ffb020" },
+  fringe: { icon: "help-circle", color: colors.textSecondary },
+};
 
 export function Card({ children, style }: { children: React.ReactNode; style?: object }) {
   return <View style={[styles.card, style]}>{children}</View>;
@@ -82,14 +90,29 @@ export function ScoreBadge({ score }: { score: number | null }) {
 }
 
 export function PlayerRow({ player, subtle }: { player: PlayerSummary; subtle?: boolean }) {
+  const risk = player.risk.level !== "ok" ? RISK_STYLE[player.risk.level] : null;
+
   return (
     <View style={[styles.playerRow, subtle && { opacity: 0.6 }]}>
       <PositionBadge pos={player.pos} />
       <View style={styles.playerInfo}>
-        <Text style={styles.playerName} numberOfLines={1}>
-          {player.name}{player.captain ? " (C)" : ""}
+        <View style={styles.playerNameRow}>
+          <Text style={styles.playerName} numberOfLines={1}>
+            {player.name}{player.captain ? " (C)" : ""}
+          </Text>
+          {risk && (
+            <Pressable
+              hitSlop={8}
+              onPress={() => Alert.alert(player.name, player.risk.detail ?? "Flagged")}
+            >
+              <Ionicons name={risk.icon} size={16} color={risk.color} />
+            </Pressable>
+          )}
+        </View>
+        <Text style={type.caption} numberOfLines={1}>
+          {player.team} · £{player.price.toFixed(1)}m
+          {player.fixture !== "—" ? ` · ${player.fixture}` : ""}
         </Text>
-        <Text style={type.caption}>{player.team} · £{player.price.toFixed(1)}m</Text>
       </View>
       <Text style={styles.playerXpts}>{player.xpts.toFixed(1)}</Text>
     </View>
@@ -140,6 +163,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   playerInfo: { flex: 1, minWidth: 0 },
-  playerName: { fontSize: 14, fontWeight: "600", color: colors.textPrimary },
+  playerNameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  playerName: { fontSize: 14, fontWeight: "600", color: colors.textPrimary, flexShrink: 1 },
   playerXpts: { fontWeight: "700", fontSize: 14, color: colors.primary, width: 40, textAlign: "right" },
 });

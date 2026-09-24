@@ -480,3 +480,59 @@ redesign itself was NOT clicked-through by a human in this session
 whoever picks this up should reload the app on-device and confirm the
 new tab bar/cards/colors actually render as intended before trusting
 this further.
+
+## `cateingle-f9` session, round 7: fixtures, injury flags, weekly plan (api.py + mobile/)
+
+Direct feedback after the redesign was confirmed working on-device: "why
+is it doing 3 weeks" (an arbitrary hardcoded value from the first vertical
+slice, not a backend default — real default is `fpl_stage0.HORIZON = 5`),
+plus three feature asks: a weekly scroll through suggested transfers,
+upcoming fixtures per player, and tappable injury flags.
+
+**`api.py` changes** (backend, none of this touches the model — pure
+data plumbing already computed by `build_table`/`fixture_details`):
+- `player_risk(info, p)`: structured `{level, detail}` instead of a
+  pre-formatted string — `level` is one of out/doubtful/impact_sub/
+  fringe/ok, `detail` is FPL's own real injury news text where available
+  (e.g. João Pedro → `{"level": "doubtful", "detail": "Knee injury - 75%
+  chance of playing"}`, verified live). Same `SUB_PATTERN_GAP` threshold
+  as `app.py`'s own `risk_tag`, duplicated rather than imported (app.py
+  runs Streamlit UI code at module level just by being imported).
+- `fixture_labels_for_week(df, fixtures, gw, week_offset)`: same
+  duplication reasoning, mirrors `app.py`'s function of the same name
+  exactly.
+- `player_summary()` now always includes `risk` and `fixture` on every
+  player returned.
+- `/recommend` response gains a `plan` array — one entry per week of the
+  horizon (captain/XI/bench/fixtures for that week, plus
+  `transferred_in`/`transferred_out`/`hits`/`free_transfers_available`
+  from week 1 onward, mirroring `app.py`'s per-week tabs exactly). Week 0
+  has no transfer-change fields since that's the top-level `transfers`
+  block instead — same convention `app.py` already uses.
+
+**Mobile changes**:
+- `src/lib/config.ts`: new `horizon` setting (persisted, default 5,
+  bounded 1-8) — replaces the hardcoded `3` in both `index.tsx` and
+  `chips.tsx`'s fetch calls. Added a "Planning horizon" field to
+  Settings.
+- `src/components/ui.tsx`'s `PlayerRow`: now shows the fixture inline
+  (`ARS · £6.1m · LEE (H) FDR2`) and, when `risk.level !== "ok"`, a
+  small colored icon next to the name that's `Pressable` — tapping shows
+  an `Alert` with the real injury text. No new UI library; React
+  Native's built-in `Alert.alert` was enough for a tap-to-expand.
+- `src/app/index.tsx`: added a horizontal scrollable week-selector
+  (`GW6 GW7 GW8...` pills) below the transfer recommendation — tapping a
+  week shows that week's captain/XI/bench plus its planned transfer
+  change, reading from the new `plan` array. Consolidated what used to
+  be three always-week-0 sections (Captain/XI/Bench) into this one
+  week-aware view instead of duplicating them.
+
+**Verified**: backend — `pytest -q` (50 passed), live `curl` against
+`/recommend` with `horizon: 5` confirming `plan` has 5 entries with the
+right per-week keys, and confirmed real injury text flows through for
+João Pedro/van Ewijk/Hughes by scanning the actual response. Mobile —
+`tsc --noEmit` clean, `expo lint` clean, `expo-doctor` 21/21, live
+`expo start --web` bundling cleanly (899 modules) with "Weekly Plan"/
+"Planning horizon" confirmed present in the compiled bundle. As with
+every mobile round, an on-device click-through by a human is the one
+step this session can't do itself — flagged, not skipped.
