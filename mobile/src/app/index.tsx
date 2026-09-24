@@ -1,48 +1,37 @@
 import { useCallback, useState } from "react";
-import {
-  View, Text, Pressable, StyleSheet, ScrollView,
-  ActivityIndicator, RefreshControl,
-} from "react-native";
-import { router, useFocusEffect } from "expo-router";
+import { View, Text, StyleSheet, ScrollView, RefreshControl } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useFocusEffect } from "expo-router";
+import Ionicons from "@expo/vector-icons/Ionicons";
 
 import { getApiBaseUrl, getTeamId } from "@/lib/config";
-import { postRecommend, RecommendResponse, PlayerSummary, ApiError } from "@/lib/api";
+import { postRecommend, RecommendResponse, ApiError } from "@/lib/api";
+import { colors, spacing, type } from "@/lib/theme";
+import { Card, SectionTitle, PrimaryButton, Metric, PlayerRow } from "@/components/ui";
 
 export default function HomeScreen() {
-  const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [teamId, setTeamId] = useState("");
   const [result, setResult] = useState<RecommendResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-read settings every time this screen regains focus (e.g. coming
-  // back from Settings) — reading from local component state that was
-  // only set on mount would show stale values after an edit.
   useFocusEffect(
     useCallback(() => {
-      (async () => {
-        setApiBaseUrl(await getApiBaseUrl());
-        setTeamId(await getTeamId());
-      })();
+      (async () => setTeamId(await getTeamId()))();
     }, [])
   );
 
   async function fetchRecommendation() {
-    // Read fresh from storage rather than trusting component state for
-    // the actual network call — belt-and-braces against the state above
-    // somehow lagging a Settings edit.
     const baseUrl = await getApiBaseUrl();
     const id = await getTeamId();
     if (!id) {
-      setError("Set your Team ID in Settings first.");
+      setError("Set your Team ID in the Settings tab first.");
       return;
     }
-
     setLoading(true);
     setError(null);
     try {
-      const data = await postRecommend(baseUrl, { team_id: Number(id), horizon: 3 });
-      setResult(data);
+      setResult(await postRecommend(baseUrl, { team_id: Number(id), horizon: 3 }));
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Something went wrong.");
     } finally {
@@ -51,141 +40,109 @@ export default function HomeScreen() {
   }
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={fetchRecommendation} />}
-    >
-      <View style={styles.statusRow}>
-        <Text style={styles.statusText}>
-          {teamId ? `Team ${teamId}` : "No team set"} · {apiBaseUrl || "no API URL set"}
-        </Text>
-        <View style={styles.linkRow}>
-          <Pressable onPress={() => router.push("/chips")}>
-            <Text style={styles.settingsLink}>Chips</Text>
-          </Pressable>
-          <Pressable onPress={() => router.push("/settings")}>
-            <Text style={styles.settingsLink}>Settings</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      <Pressable
-        style={[styles.button, loading && styles.buttonDisabled]}
-        onPress={fetchRecommendation}
-        disabled={loading}
+    <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={fetchRecommendation} />}
       >
-        {loading
-          ? <ActivityIndicator color="white" />
-          : <Text style={styles.buttonText}>Get Recommendation</Text>}
-      </Pressable>
+        {!teamId && (
+          <View style={styles.emptyState}>
+            <Ionicons name="person-circle-outline" size={48} color={colors.textSecondary} />
+            <Text style={styles.emptyStateText}>Set your Team ID in the Settings tab to get started.</Text>
+          </View>
+        )}
 
-      {error && <Text style={styles.error}>{error}</Text>}
+        <PrimaryButton label="Get Recommendation" onPress={fetchRecommendation} loading={loading} />
 
-      {result && <ResultView result={result} />}
-    </ScrollView>
+        {error && (
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle" size={18} color={colors.danger} />
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+
+        {result && <ResultView result={result} />}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 function ResultView({ result }: { result: RecommendResponse }) {
   const { transfers } = result;
   return (
-    <View style={styles.resultBlock}>
-      <Text style={styles.gwTitle}>GW{result.gw} — {result.horizon}-week plan</Text>
-      <View style={styles.metricsRow}>
-        <Metric label="Objective" value={result.objective.toFixed(1)} />
-        <Metric label="Avg / GW" value={result.average_per_gw.toFixed(1)} />
-        <Metric label="Squad cost" value={`£${result.squad_cost.toFixed(1)}m`} />
-      </View>
+    <View>
+      <Card style={styles.headerCard}>
+        <Text style={styles.gwTitle}>GW{result.gw}</Text>
+        <Text style={styles.gwSubtitle}>{result.horizon}-week plan</Text>
+        <View style={styles.metricsRow}>
+          <Metric light label="Objective" value={result.objective.toFixed(1)} />
+          <Metric light label="Avg / GW" value={result.average_per_gw.toFixed(1)} />
+          <Metric light label="Cost" value={`£${result.squad_cost.toFixed(1)}m`} />
+        </View>
+      </Card>
 
-      <Text style={styles.sectionTitle}>Transfers</Text>
-      {transfers.out.length === 0 ? (
-        <Text style={styles.bodyText}>No transfer — roll it.</Text>
-      ) : (
-        <>
-          <Text style={styles.bodyText}>
-            {transfers.out.length} transfer(s), {transfers.hits} hit(s)
-            {transfers.hits > 0 ? ` (-${transfers.hit_cost_paid.toFixed(0)} pts)` : ""}
-          </Text>
-          <View style={styles.transferCols}>
-            <View style={styles.transferCol}>
-              <Text style={styles.transferHeader}>OUT</Text>
-              {transfers.out.map((p) => <PlayerRow key={p.id} player={p} />)}
+      <SectionTitle>Transfers</SectionTitle>
+      <Card>
+        {transfers.out.length === 0 ? (
+          <Text style={type.body}>No transfer — roll it.</Text>
+        ) : (
+          <>
+            <View style={styles.transferBanner}>
+              <Text style={styles.transferBannerText}>
+                {transfers.out.length} transfer{transfers.out.length > 1 ? "s" : ""}
+                {transfers.hits > 0
+                  ? ` · ${transfers.hits} hit${transfers.hits > 1 ? "s" : ""} (-${transfers.hit_cost_paid.toFixed(0)} pts)`
+                  : " · free"}
+              </Text>
             </View>
-            <View style={styles.transferCol}>
-              <Text style={styles.transferHeader}>IN</Text>
-              {transfers.in.map((p) => <PlayerRow key={p.id} player={p} />)}
+            <View style={styles.transferCols}>
+              <View style={styles.transferCol}>
+                <Text style={styles.transferHeader}>OUT</Text>
+                {transfers.out.map((p) => <PlayerRow key={p.id} player={p} subtle />)}
+              </View>
+              <View style={styles.transferCol}>
+                <Text style={styles.transferHeader}>IN</Text>
+                {transfers.in.map((p) => <PlayerRow key={p.id} player={p} />)}
+              </View>
             </View>
-          </View>
-        </>
-      )}
+          </>
+        )}
+      </Card>
 
-      <Text style={styles.sectionTitle}>Captain</Text>
-      <PlayerRow player={result.captain} />
+      <SectionTitle>Captain</SectionTitle>
+      <Card><PlayerRow player={result.captain} /></Card>
 
-      <Text style={styles.sectionTitle}>Starting XI</Text>
-      {result.xi.map((p) => <PlayerRow key={p.id} player={p} />)}
+      <SectionTitle>Starting XI</SectionTitle>
+      <Card>{result.xi.map((p) => <PlayerRow key={p.id} player={p} />)}</Card>
 
-      <Text style={styles.sectionTitle}>Bench</Text>
-      {result.bench.map((p) => <PlayerRow key={p.id} player={p} />)}
-    </View>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.metric}>
-      <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function PlayerRow({ player }: { player: PlayerSummary }) {
-  return (
-    <View style={styles.playerRow}>
-      <Text style={styles.playerName}>
-        {player.name}{player.captain ? " (C)" : ""}
-      </Text>
-      <Text style={styles.playerMeta}>{player.pos} · £{player.price.toFixed(1)}m</Text>
-      <Text style={styles.playerXpts}>{player.xpts.toFixed(1)}</Text>
+      <SectionTitle>Bench</SectionTitle>
+      <Card>{result.bench.map((p) => <PlayerRow key={p.id} player={p} subtle />)}</Card>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "white" },
-  content: { padding: 16, paddingBottom: 48 },
-  statusRow: {
-    flexDirection: "row", justifyContent: "space-between",
-    alignItems: "center", marginBottom: 16,
+  safeArea: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1 },
+  content: { padding: spacing.md, paddingBottom: spacing.xl },
+  emptyState: { alignItems: "center", paddingVertical: spacing.lg, gap: spacing.sm },
+  emptyStateText: { ...type.body, color: colors.textSecondary, textAlign: "center" },
+  errorBox: {
+    flexDirection: "row", alignItems: "center", gap: spacing.sm,
+    backgroundColor: "#fdecef", borderRadius: 10, padding: spacing.sm, marginTop: spacing.md,
   },
-  statusText: { color: "#666", fontSize: 13, flexShrink: 1 },
-  linkRow: { flexDirection: "row", gap: 16 },
-  settingsLink: { color: "#37003c", fontWeight: "600" },
-  button: {
-    backgroundColor: "#37003c", borderRadius: 8, padding: 14,
-    alignItems: "center", justifyContent: "center", minHeight: 48,
+  errorText: { color: colors.danger, flex: 1, fontSize: 13 },
+  headerCard: { marginTop: spacing.md, backgroundColor: colors.primary },
+  gwTitle: { fontSize: 26, fontWeight: "800", color: colors.textOnPrimary },
+  gwSubtitle: { color: "#d9c2db", marginBottom: spacing.md },
+  metricsRow: { flexDirection: "row", justifyContent: "space-between" },
+  transferBanner: {
+    backgroundColor: colors.background, borderRadius: 8,
+    paddingVertical: 6, paddingHorizontal: 10, marginBottom: spacing.sm, alignSelf: "flex-start",
   },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: "white", fontWeight: "600", fontSize: 16 },
-  error: { color: "#c00", marginTop: 12 },
-  resultBlock: { marginTop: 20 },
-  gwTitle: { fontSize: 18, fontWeight: "700", marginBottom: 12 },
-  metricsRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 16 },
-  metric: { alignItems: "center" },
-  metricValue: { fontSize: 20, fontWeight: "700" },
-  metricLabel: { color: "#666", fontSize: 12 },
-  sectionTitle: { fontWeight: "700", fontSize: 15, marginTop: 16, marginBottom: 6 },
-  bodyText: { fontSize: 14 },
-  transferCols: { flexDirection: "row", gap: 16 },
+  transferBannerText: { fontWeight: "700", fontSize: 12, color: colors.primary },
+  transferCols: { flexDirection: "row", gap: spacing.md },
   transferCol: { flex: 1 },
-  transferHeader: { fontWeight: "600", color: "#666", marginBottom: 4 },
-  playerRow: {
-    flexDirection: "row", justifyContent: "space-between",
-    paddingVertical: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: "#eee",
-  },
-  playerName: { flex: 2, fontSize: 14 },
-  playerMeta: { flex: 1, fontSize: 12, color: "#666" },
-  playerXpts: { width: 40, textAlign: "right", fontSize: 14, fontWeight: "600" },
+  transferHeader: { ...type.metricLabel, marginBottom: spacing.xs },
 });

@@ -428,3 +428,55 @@ means the code is wrong.
 compiled bundle contains "Chip Strategy"/"Get Chip Values"/"Bench Boost".
 Same open gap as round 4: no browser tool connected in this session to
 click through interactively.
+
+## `cateingle-f9` session, round 6: real device verification + visual redesign (mobile/)
+
+**Verification gap CLOSED**: the app was actually run on a real iPhone via
+Expo Go — the one thing rounds 4-5 flagged as unverified. Two real
+environment problems hit and fixed along the way, both worth knowing if
+this comes up again:
+- The dev machine's network (university-adjacent, `10.20.x.x` range)
+  enforces client isolation — phone and laptop on the "same WiFi" still
+  couldn't reach each other at the TCP level. No app/firewall config
+  fixes this (checked: macOS firewall was already disabled). Fixed by
+  putting both devices on the iPhone's own Personal Hotspot instead
+  (`172.20.10.x` subnet) — guarantees no isolation since the phone IS the
+  router. Whoever tests this next, on any network, should suspect this
+  FIRST if "same WiFi" still can't connect.
+- Recent Expo Go requires signing into the SAME Expo account (free) on
+  both the phone's Expo Go app and this machine's Expo CLI to open a
+  project from a local dev server on a physical iOS device — not
+  optional, not a flag. `npx expo login` on the CLI side.
+- A QR code from `npx expo start` doesn't render into a redirected/
+  non-TTY log file (its interactive terminal UI needs a real TTY) — a
+  QR image was generated directly with the `qrcode` Python package
+  instead (`qrcode.make(url).save(...)`) and opened with `open` for the
+  user to scan with iOS's Camera app.
+
+**Visual redesign**, prompted by direct feedback ("the interface isnt
+that nice") once the plumbing was confirmed working:
+- `src/lib/theme.ts` — shared color/spacing/radius/type tokens (FPL
+  purple/green/pink-inspired palette, not exact brand assets) so every
+  screen draws from the same system instead of independently-styled
+  inline values.
+- `src/components/ui.tsx` — reusable `Card`, `PrimaryButton`,
+  `PositionBadge` (colored per GK/DEF/MID/FWD), `Metric`, `ScoreBadge`
+  (green/amber/red by score), `PlayerRow` — used by every screen instead
+  of each one styling its own player rows independently.
+- Navigation changed from a `Stack` with a "Settings" text link to a
+  proper bottom **Tab bar** (`expo-router`'s `Tabs`, `@expo/vector-icons`
+  for icons) — Squad / Chips / Settings. This is the single change that
+  most makes it "feel like a real app" rather than a dev harness.
+- `expo-doctor` caught a real gap immediately: `@expo/vector-icons`
+  needs `expo-font` as a peer dependency for anything beyond Expo Go —
+  installed via `npx expo install expo-font`, doctor back to 21/21.
+
+**Verified**: `tsc --noEmit` clean, `expo lint` clean (fixed one real
+unused-import warning), `expo-doctor` 21/21, live `expo start --web`
+bundling cleanly (905 modules) against a real running API server with
+the new screen text confirmed present in the compiled bundle. The
+redesign itself was NOT clicked-through by a human in this session
+(the live device test above was done BEFORE this round's changes) —
+whoever picks this up should reload the app on-device and confirm the
+new tab bar/cards/colors actually render as intended before trusting
+this further.

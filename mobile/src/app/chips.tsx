@@ -1,8 +1,12 @@
 import { useState } from "react";
-import { View, Text, Pressable, StyleSheet, ScrollView, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import Ionicons from "@expo/vector-icons/Ionicons";
 
 import { getApiBaseUrl, getTeamId } from "@/lib/config";
 import { postChips, ChipsResponse, ChipScore, ApiError } from "@/lib/api";
+import { colors, spacing, type } from "@/lib/theme";
+import { Card, PrimaryButton, ScoreBadge } from "@/components/ui";
 
 export default function ChipsScreen() {
   const [result, setResult] = useState<ChipsResponse | null>(null);
@@ -13,14 +17,13 @@ export default function ChipsScreen() {
     const baseUrl = await getApiBaseUrl();
     const id = await getTeamId();
     if (!id) {
-      setError("Set your Team ID in Settings first.");
+      setError("Set your Team ID in the Settings tab first.");
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const data = await postChips(baseUrl, { team_id: Number(id), horizon: 3 });
-      setResult(data);
+      setResult(await postChips(baseUrl, { team_id: Number(id), horizon: 3 }));
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Something went wrong.");
     } finally {
@@ -29,52 +32,40 @@ export default function ChipsScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>
-        Values are for your CURRENT squad, before any transfer is applied — don&apos;t act on
-        one week&apos;s reading alone.
-      </Text>
+    <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <Text style={styles.intro}>
+          Values are for your CURRENT squad, before any transfer is applied — don&apos;t act on
+          one week&apos;s reading alone.
+        </Text>
 
-      <Pressable
-        style={[styles.button, loading && styles.buttonDisabled]}
-        onPress={fetchChips}
-        disabled={loading}
-      >
-        {loading
-          ? <ActivityIndicator color="white" />
-          : <Text style={styles.buttonText}>Get Chip Values</Text>}
-      </Pressable>
+        <PrimaryButton label="Get Chip Values" onPress={fetchChips} loading={loading} />
 
-      {error && <Text style={styles.error}>{error}</Text>}
+        {error && (
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle" size={18} color={colors.danger} />
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
 
-      {result && (
-        <View style={styles.resultBlock}>
-          <Text style={styles.gwTitle}>GW{result.gw} — {result.horizon}-week horizon</Text>
-
-          <ChipCard
-            name="Bench Boost"
-            byWeek={result.bench_boost.by_week}
-            score={result.bench_boost.score}
-            startGw={result.gw}
-          />
-          <ChipCard
-            name="Triple Captain"
-            byWeek={result.triple_captain.by_week}
-            score={result.triple_captain.score}
-            startGw={result.gw}
-          />
-          <SingleValueChipCard name="Wildcard" gain={result.wildcard.gain} score={result.wildcard.score} />
-          <SingleValueChipCard name="Free Hit" gain={result.free_hit.gain} score={result.free_hit.score} />
-        </View>
-      )}
-    </ScrollView>
+        {result && (
+          <View style={styles.resultBlock}>
+            <ChipCard name="Bench Boost" icon="people" byWeek={result.bench_boost.by_week} score={result.bench_boost.score} startGw={result.gw} />
+            <ChipCard name="Triple Captain" icon="star" byWeek={result.triple_captain.by_week} score={result.triple_captain.score} startGw={result.gw} />
+            <SingleValueChipCard name="Wildcard" icon="refresh-circle" gain={result.wildcard.gain} score={result.wildcard.score} />
+            <SingleValueChipCard name="Free Hit" icon="flash" gain={result.free_hit.gain} score={result.free_hit.score} />
+          </View>
+        )}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 function ChipCard({
-  name, byWeek, score, startGw,
+  name, icon, byWeek, score, startGw,
 }: {
   name: string;
+  icon: keyof typeof Ionicons.glyphMap;
   byWeek: Record<string, number>;
   score: ChipScore;
   startGw: number;
@@ -83,66 +74,66 @@ function ChipCard({
   const bestOffset = weeks.reduce((best, [w, v]) => (v > byWeek[best] ? w : best), weeks[0]?.[0] ?? "0");
 
   return (
-    <View style={styles.card}>
+    <Card>
       <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>{name}</Text>
-        <Text style={styles.cardScore}>
-          {score.score !== null ? `${score.score}/10` : "n/a"}
-        </Text>
+        <View style={styles.cardTitleRow}>
+          <Ionicons name={icon} size={18} color={colors.primary} />
+          <Text style={styles.cardTitle}>{name}</Text>
+        </View>
+        <ScoreBadge score={score.score} />
       </View>
       {weeks.map(([offset, value]) => (
         <View key={offset} style={styles.weekRow}>
           <Text style={styles.weekLabel}>
-            GW{startGw + Number(offset)}{offset === bestOffset ? " ★" : ""}
+            GW{startGw + Number(offset)}{offset === bestOffset ? "  ⭐ best" : ""}
           </Text>
           <Text style={styles.weekValue}>+{value.toFixed(2)} pts</Text>
         </View>
       ))}
       <Text style={styles.verdict}>{score.verdict}</Text>
-    </View>
+    </Card>
   );
 }
 
-function SingleValueChipCard({ name, gain, score }: { name: string; gain: number; score: ChipScore }) {
+function SingleValueChipCard({
+  name, icon, gain, score,
+}: {
+  name: string; icon: keyof typeof Ionicons.glyphMap; gain: number; score: ChipScore;
+}) {
   return (
-    <View style={styles.card}>
+    <Card>
       <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>{name}</Text>
-        <Text style={styles.cardScore}>
-          {score.score !== null ? `${score.score}/10` : "n/a"}
-        </Text>
+        <View style={styles.cardTitleRow}>
+          <Ionicons name={icon} size={18} color={colors.primary} />
+          <Text style={styles.cardTitle}>{name}</Text>
+        </View>
+        <ScoreBadge score={score.score} />
       </View>
       <Text style={styles.weekValue}>+{gain.toFixed(2)} pts</Text>
       <Text style={styles.verdict}>{score.verdict}</Text>
-    </View>
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "white" },
-  content: { padding: 16, paddingBottom: 48 },
-  intro: { color: "#666", fontSize: 13, marginBottom: 16 },
-  button: {
-    backgroundColor: "#37003c", borderRadius: 8, padding: 14,
-    alignItems: "center", justifyContent: "center", minHeight: 48,
+  safeArea: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1 },
+  content: { padding: spacing.md, paddingBottom: spacing.xl },
+  intro: { ...type.caption, marginBottom: spacing.md, lineHeight: 16 },
+  errorBox: {
+    flexDirection: "row", alignItems: "center", gap: spacing.sm,
+    backgroundColor: "#fdecef", borderRadius: 10, padding: spacing.sm, marginTop: spacing.md,
   },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: "white", fontWeight: "600", fontSize: 16 },
-  error: { color: "#c00", marginTop: 12 },
-  resultBlock: { marginTop: 20 },
-  gwTitle: { fontSize: 18, fontWeight: "700", marginBottom: 12 },
-  card: {
-    borderWidth: 1, borderColor: "#eee", borderRadius: 10,
-    padding: 14, marginBottom: 12,
-  },
+  errorText: { color: colors.danger, flex: 1, fontSize: 13 },
+  resultBlock: { marginTop: spacing.md },
   cardHeader: {
     flexDirection: "row", justifyContent: "space-between",
-    alignItems: "center", marginBottom: 6,
+    alignItems: "center", marginBottom: spacing.sm,
   },
-  cardTitle: { fontWeight: "700", fontSize: 15 },
-  cardScore: { fontWeight: "700", fontSize: 15, color: "#37003c" },
-  weekRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 2 },
-  weekLabel: { fontSize: 13, color: "#444" },
-  weekValue: { fontSize: 13, fontWeight: "600" },
-  verdict: { color: "#666", fontSize: 12, marginTop: 6 },
+  cardTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  cardTitle: { ...type.subtitle },
+  weekRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 3 },
+  weekLabel: { fontSize: 13, color: colors.textPrimary },
+  weekValue: { fontSize: 14, fontWeight: "700", color: colors.primary },
+  verdict: { ...type.caption, marginTop: spacing.sm, lineHeight: 16 },
 });
