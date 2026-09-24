@@ -536,3 +536,49 @@ João Pedro/van Ewijk/Hughes by scanning the actual response. Mobile —
 "Planning horizon" confirmed present in the compiled bundle. As with
 every mobile round, an on-device click-through by a human is the one
 step this session can't do itself — flagged, not skipped.
+
+## `cateingle-f9` session, round 8: deployment prep — requirements.txt + API key auth
+
+Scoped hosting the FastAPI backend (Render's free tier, discussed with
+the user — cold starts + ephemeral disk accepted as tradeoffs of $0/month).
+Two things needed before that's safe to actually do, both done:
+
+1. **`requirements.txt`** (didn't exist anywhere in the repo before this
+   — every script assumed its deps were just already installed on this
+   machine). Pinned to versions actually tested here: `fastapi==0.141.1`,
+   `uvicorn==0.53.0`, `pulp==3.3.2`, `pandas==2.3.3`, `numpy==1.26.4`,
+   `requests==2.34.2`, `joblib==1.5.3`, `scikit-learn==1.8.0`.
+   `scikit-learn`/`joblib` are for `ml_predict.py`'s cold-start path,
+   which degrades gracefully to "no ML" if `ml_model.joblib` isn't
+   present (it's gitignored — a fresh deploy won't have one). Also added
+   `runtime.txt` (`python-3.11.9`) for Render's Python version pinning.
+   **Verified for real, not just written and hoped**: built a completely
+   clean `venv`, installed ONLY from `requirements.txt`, and ran a full
+   `/recommend` solve against live data from that isolated environment —
+   confirms nothing's missing before this ever touches a real host.
+
+2. **API key auth** (`api.py`) — `require_api_key()`, a FastAPI
+   dependency applied to every route except `/health`. Enforced ONLY
+   when the `API_KEY` environment variable is actually set — local dev
+   (no `API_KEY` exported) is completely unaffected, verified by testing
+   both states directly: unset → works with no header; set → wrong/
+   missing header gets a clean 401, correct `X-API-Key` header gets 200,
+   `/health` stays open either way. This exists because `/recommend` runs
+   a real CPU-heavy MILP solve — an unauthenticated public URL is an open
+   invitation to burn hosting compute for free, not a hypothetical risk.
+   Mobile side: `src/lib/config.ts` gained a persisted `apiKey` (empty by
+   default), a matching "API Key" field in Settings, and `api.ts`'s
+   single `request()` choke point now attaches it as `X-API-Key` on
+   every call when non-empty — no need to thread it through each
+   exported function/call site individually.
+
+**Not yet done**: the actual Render deployment itself (account creation,
+connecting the repo, setting the `API_KEY` env var there, updating the
+mobile app's default API base URL to the deployed one) — this session
+prepared everything needed for that step but didn't execute it.
+
+**Verified**: `pytest -q` (50 passed) after the auth changes, direct curl
+tests of all four auth states against a real running server, the clean-
+venv end-to-end solve described above, and the usual mobile trio
+(`tsc`/`lint`/`expo-doctor` clean, live bundle test confirming "API Key"/
+"X-API-Key" present in compiled output).

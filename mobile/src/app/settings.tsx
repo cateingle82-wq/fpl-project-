@@ -11,6 +11,8 @@ import {
   setTeamId,
   getHorizon,
   setHorizon,
+  getApiKey,
+  setApiKey,
 } from "@/lib/config";
 import { colors, spacing, radius, type } from "@/lib/theme";
 import { Card, PrimaryButton } from "@/components/ui";
@@ -19,6 +21,7 @@ export default function SettingsScreen() {
   const [apiBaseUrl, setApiBaseUrlInput] = useState(DEFAULT_API_BASE_URL);
   const [teamId, setTeamIdInput] = useState("");
   const [horizon, setHorizonInput] = useState(String(DEFAULT_HORIZON));
+  const [apiKey, setApiKeyInput] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -27,6 +30,7 @@ export default function SettingsScreen() {
       setApiBaseUrlInput(await getApiBaseUrl());
       setTeamIdInput(await getTeamId());
       setHorizonInput(String(await getHorizon()));
+      setApiKeyInput(await getApiKey());
       setLoaded(true);
     })();
   }, []);
@@ -44,6 +48,7 @@ export default function SettingsScreen() {
     await setApiBaseUrl(apiBaseUrl);
     await setTeamId(teamId);
     await setHorizon(horizonNum);
+    await setApiKey(apiKey);
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 1800);
   }
@@ -99,6 +104,26 @@ export default function SettingsScreen() {
             How many gameweeks ahead the optimiser plans over (1-8). A longer horizon lets it
             reason about banking a transfer now for a bigger swap later — see the Weekly Plan
             scroll on the Squad tab.
+          </Text>
+        </Card>
+
+        <Card>
+          <Text style={styles.label}>API Key</Text>
+          <TextInput
+            style={styles.input}
+            value={apiKey}
+            onChangeText={setApiKeyInput}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            placeholder="leave blank for local dev"
+            placeholderTextColor={colors.textSecondary}
+          />
+          <Text style={styles.hint}>
+            Only needed once the backend is deployed somewhere public with an API_KEY
+            configured — local dev against a server with no API_KEY set ignores this
+            entirely. Sent as the X-API-Key header on every request; never leave this
+            blank once the backend is reachable from the internet.
           </Text>
         </Card>
 

@@ -31,13 +31,14 @@ Docs:  http://localhost:8000/docs  (FastAPI's automatic interactive OpenAPI UI)
 
 import csv
 import os
+import secrets
 import time
 from typing import Optional
 
 import pandas as pd
 import pulp
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import chips
@@ -49,6 +50,30 @@ app = FastAPI(
     description="HTTP wrapper over the same optimiser/chip/backtest logic app.py uses.",
     version="0.1.0",
 )
+
+
+# ----------------------------------------------------------------------------
+# API key auth — enforced ONLY when the API_KEY environment variable is
+# actually set. Local dev (no API_KEY exported) behaves exactly as before,
+# unauthenticated. Once deployed somewhere with API_KEY configured, every
+# endpoint below except /health requires a matching X-API-Key header.
+# Without this, a public URL running a CPU-heavy MILP solve on every
+# /recommend call is an open invitation for anyone who finds it to burn
+# your hosting's compute for free — this is not optional polish for a
+# deployment that's actually reachable from the internet.
+# ----------------------------------------------------------------------------
+
+API_KEY = os.environ.get("API_KEY")
+
+
+def require_api_key(x_api_key: Optional[str] = Header(default=None)):
+    if API_KEY is None:
+        return
+    if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header.")
+
+
+auth = [Depends(require_api_key)]
 
 
 # ----------------------------------------------------------------------------
@@ -237,7 +262,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/deadline")
+@app.get("/deadline", dependencies=auth)
 def deadline():
     """Next gameweek id + its raw deadline_time — the client computes its
     own countdown from this rather than the server baking in a
@@ -250,7 +275,7 @@ def deadline():
     raise HTTPException(status_code=404, detail="No upcoming gameweek found.")
 
 
-@app.get("/squad")
+@app.get("/squad", dependencies=auth)
 def squad(team_id: int):
     """Live squad/bank/free-transfers for one team — the read-only lookup
     a client would call before letting someone edit their config, same
@@ -267,7 +292,7 @@ def squad(team_id: int):
     }
 
 
-@app.post("/recommend")
+@app.post("/recommend", dependencies=auth)
 def recommend(req: SquadRequest):
     """The main endpoint: solve Stage A + Stage B and return the transfer
     recommendation, starting XI, and bench for week 0 (the only REAL
@@ -360,7 +385,7 @@ def recommend(req: SquadRequest):
     }
 
 
-@app.post("/chips")
+@app.post("/chips", dependencies=auth)
 def chip_values(req: SquadRequest):
     """Bench Boost / Triple Captain / Wildcard / Free Hit values for the
     CURRENT squad (before any transfer /recommend suggests), plus the
@@ -390,7 +415,7 @@ def chip_values(req: SquadRequest):
     }
 
 
-@app.get("/chip-log")
+@app.get("/chip-log", dependencies=auth)
 def chip_log():
     """Raw rows from chip_log.csv, for a client to plot its own trend
     chart from — same data app.py's chip-log-based scoring reads."""
@@ -400,7 +425,7 @@ def chip_log():
         return list(csv.DictReader(f))
 
 
-@app.get("/model-health")
+@app.get("/model-health", dependencies=auth)
 def model_health():
     """backtest.py's own predicted-vs-actual track record, for a client's
     'should I trust this model' view — same data app.py's Model Health

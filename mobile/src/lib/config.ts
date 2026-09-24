@@ -19,6 +19,7 @@ const KEYS = {
   apiBaseUrl: "fpl.apiBaseUrl",
   teamId: "fpl.teamId",
   horizon: "fpl.horizon",
+  apiKey: "fpl.apiKey",
 } as const;
 
 export const DEFAULT_API_BASE_URL = "http://localhost:8000";
@@ -53,4 +54,16 @@ export async function getHorizon(): Promise<number> {
 
 export async function setHorizon(horizon: number): Promise<void> {
   await AsyncStorage.setItem(KEYS.horizon, String(horizon));
+}
+
+// Empty string when unset — only needed once the backend is deployed
+// somewhere public with API_KEY configured (see api.py). Local dev
+// against a server with no API_KEY set ignores this entirely, so
+// leaving it blank is the correct default, not a broken one.
+export async function getApiKey(): Promise<string> {
+  return (await AsyncStorage.getItem(KEYS.apiKey)) ?? "";
+}
+
+export async function setApiKey(key: string): Promise<void> {
+  await AsyncStorage.setItem(KEYS.apiKey, key.trim());
 }

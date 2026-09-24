@@ -1,0 +1,17 @@
+# Pinned to what's actually installed and tested against this project
+# (see HANDOVER.md) — not a generic "latest" list. Only what api.py and
+# the modules it imports (fpl_optimise, fpl_stage0, chips) need at
+# runtime; ml_predict's joblib.load_model() already degrades gracefully
+# to "no ML cold-start model" if ml_model.joblib isn't present (it's
+# gitignored — a fresh deploy won't have one, by design), so
+# scikit-learn is included only so unpickling a model doesn't crash IF
+# one is later added, not because /recommend needs it today.
+
+fastapi==0.141.1
+uvicorn==0.53.0
+pulp==3.3.2
+pandas==2.3.3
+numpy==1.26.4
+requests==2.34.2
+joblib==1.5.3
+scikit-learn==1.8.0

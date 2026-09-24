@@ -4,6 +4,7 @@
  * if you change a field there, change it here too; there's no shared
  * schema between the two languages to keep them honest automatically.
  */
+import { getApiKey } from "@/lib/config";
 
 export class ApiError extends Error {
   status: number;
@@ -14,11 +15,21 @@ export class ApiError extends Error {
 }
 
 async function request<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+  // Read from storage on every call rather than threading an apiKey
+  // param through every exported function and call site — this is the
+  // one choke point all HTTP calls already go through. Sends nothing
+  // when unset (local dev against a server with no API_KEY configured
+  // ignores the header entirely — see api.py's require_api_key).
+  const apiKey = await getApiKey();
   let res: Response;
   try {
     res = await fetch(`${baseUrl}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "X-API-Key": apiKey } : {}),
+        ...(init?.headers ?? {}),
+      },
     });
   } catch {
     // A network-level failure (host unreachable, wrong URL, server not
