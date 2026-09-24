@@ -582,3 +582,46 @@ tests of all four auth states against a real running server, the clean-
 venv end-to-end solve described above, and the usual mobile trio
 (`tsc`/`lint`/`expo-doctor` clean, live bundle test confirming "API Key"/
 "X-API-Key" present in compiled output).
+
+## The Render deployment actually happened (user-driven, between sessions)
+
+The backend is now live at a real Render URL (not recorded here
+deliberately — it's paired with the `API_KEY` secret and neither belongs
+in a doc committed to a public repo). Two things worth knowing:
+- Render defaulted to a PAID instance type ($7/month "Starter") during
+  setup rather than the free tier — caught before it accrued meaningful
+  charges and downgraded to Free. If this is ever redeployed from
+  scratch, explicitly select "Free" as the Instance Type; don't trust
+  whatever Render defaults to.
+- Verified end-to-end from a real deployed instance (not just locally):
+  `/health` responds in ~0.3s, `/recommend` without an `X-API-Key`
+  header correctly returns 401, and with the correct header returns a
+  real solved recommendation. The mobile app's Settings now point at
+  this URL — the hotspot/local-network workaround from round 6 is no
+  longer needed for API calls (only Expo Go's own JS-bundle connection
+  to this laptop's Metro server still needs the same network).
+
+## `cateingle-f9` session, round 9: pitch-view lineup visual (mobile/)
+
+Direct feedback: "add in the lineup visuals make it look better." Ported
+the Streamlit dashboard's formation-layout idea to mobile as a new
+`src/components/pitch.tsx` (`PitchView`) — attack at top, keeper at
+bottom, positions grouped into rows, a bench strip below. Pure Views/
+borders for the pitch background, center circle and halfway line — no
+SVG or gradient library needed (none installed, none of this required
+one). Captain gets a gold armband badge; injury-flagged players keep the
+same tappable risk icon as `PlayerRow` (exported `RISK_STYLE` from
+`ui.tsx` so both components draw from one source instead of duplicating
+the icon/color mapping).
+
+Replaced index.tsx's separate always-shown "Captain"/"Starting XI"/
+"Bench" card sections with this single `PitchView` — captain is now
+marked inline via the armband badge instead of a redundant standalone
+section (the captain was always also in the XI list, so that third
+section was pure duplication).
+
+**Verified**: `tsc --noEmit` clean, `expo lint` clean, `expo-doctor`
+21/21, live `expo start --web` bundling cleanly (905 modules) with
+"Lineup"/"BENCH"/the pitch's green hex color confirmed present in the
+compiled bundle. As with every mobile round, an on-device click-through
+is the one step this session can't do itself.

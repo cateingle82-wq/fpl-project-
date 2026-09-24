@@ -9,7 +9,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { colors, spacing, radius, type, shadow, positionColors } from "@/lib/theme";
 import type { PlayerSummary, RiskLevel } from "@/lib/api";
 
-const RISK_STYLE: Record<Exclude<RiskLevel, "ok">, { icon: keyof typeof Ionicons.glyphMap; color: string }> = {
+export const RISK_STYLE: Record<Exclude<RiskLevel, "ok">, { icon: keyof typeof Ionicons.glyphMap; color: string }> = {
   out: { icon: "close-circle", color: colors.danger },
   doubtful: { icon: "alert-circle", color: "#ffb020" },
   impact_sub: { icon: "swap-horizontal", color: "#ffb020" },

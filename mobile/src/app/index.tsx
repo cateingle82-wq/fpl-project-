@@ -8,6 +8,7 @@ import { getApiBaseUrl, getTeamId, getHorizon } from "@/lib/config";
 import { postRecommend, RecommendResponse, PlanWeek, ApiError } from "@/lib/api";
 import { colors, spacing, type } from "@/lib/theme";
 import { Card, SectionTitle, PrimaryButton, Metric, PlayerRow } from "@/components/ui";
+import { PitchView } from "@/components/pitch";
 
 export default function HomeScreen() {
   const [teamId, setTeamId] = useState("");
@@ -165,14 +166,8 @@ function ResultView({
         </Card>
       )}
 
-      <SectionTitle>Captain</SectionTitle>
-      <Card><PlayerRow player={week.captain} /></Card>
-
-      <SectionTitle>Starting XI</SectionTitle>
-      <Card>{week.xi.map((p) => <PlayerRow key={p.id} player={p} />)}</Card>
-
-      <SectionTitle>Bench</SectionTitle>
-      <Card>{week.bench.map((p) => <PlayerRow key={p.id} player={p} subtle />)}</Card>
+      <SectionTitle>Lineup</SectionTitle>
+      <PitchView xi={week.xi} bench={week.bench} />
     </View>
   );
 }
