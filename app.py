@@ -37,6 +37,7 @@ import streamlit as st
 import backtest as bt
 import chips
 import fpl_optimise as opt
+import track_record as tr
 from fpl_stage0 import (HORIZON, SUB_PATTERN_GAP, build_table, fixture_details,
                          horizon_of, next_gameweek)
 
@@ -524,7 +525,6 @@ with st.sidebar.expander("Model health (backtest)"):
     else:
         st.caption("No backtest_results.csv yet — click **Run backtest now**.")
 
-
 # ----------------------------------------------------------------------------
 # Main page — one click SOLVES everything (transfers, weekly plan, chips)
 # and stores it in st.session_state; rendering then reads from that state
@@ -624,6 +624,13 @@ if st.button("Run optimiser", type="primary"):
     out_names = [info.loc[p, "name"] for p in out_ids]
     last_run = load_last_run()
     save_run_snapshot(gw, in_names, out_names, plan_obj)
+
+    # Logs the REAL recommendation (not a generic reconstruction) so
+    # track_record.py can later check exactly what this run told you to
+    # do against what actually happened — see its module docstring for
+    # why this is different from backtest.py's prediction-quality check.
+    bench0 = [p for p in chosen if p not in xi]
+    tr.log_recommendation(gw, xi, captain, bench0, weekly_pts[0])
 
     if log_chip_reading:
         chips.log_row(gw, bb, tc, wc, fh, horizon)
@@ -884,3 +891,48 @@ if "results" in st.session_state:
                 f"(£{(s['budget_t'] - spend) / 10:.1f}m left in the bank)")
 else:
     st.caption("Set your config in the sidebar, then click **Run optimiser**.")
+
+
+# ----------------------------------------------------------------------------
+# Deliberately placed HERE, after the main button logic above (not next to
+# Model Health earlier in the script) even though it still renders in the
+# sidebar — st.sidebar.* doesn't care where in script order it's called,
+# only ITS OWN execution order relative to tr.log_recommendation() does.
+# If this ran earlier (like Model Health does), it would read
+# recommendation_log.csv BEFORE this run's own log_recommendation() call
+# further down the script had written to it, showing stale data for a
+# full extra rerun after every click.
+# ----------------------------------------------------------------------------
+
+with st.sidebar.expander("Your actual track record"):
+    st.caption("Every 'Run optimiser' click logs the REAL XI/captain it "
+               "recommended, and once that gameweek finishes this checks "
+               "what that exact team actually scored — different from "
+               "Model Health above, which reconstructs a generic top-11 "
+               "check, not what this tool specifically told you to do. "
+               "A gameweek the optimiser was never run for can't be "
+               "recovered after the fact — there's nothing to check it "
+               "against.")
+
+    rec = tr.track_record()
+    if rec.empty:
+        st.caption("No recommendations logged yet — click **Run optimiser** above.")
+    else:
+        done = rec.dropna(subset=["actual_score"])
+        if len(done):
+            avg_pred = done["predicted_score"].mean()
+            avg_actual = done["actual_score"].mean()
+            diff = avg_actual - avg_pred
+            sign = "+" if diff >= 0 else ""
+            st.metric(f"Avg actual vs predicted ({len(done)} finished GW(s))",
+                      f"{avg_actual:.1f}", delta=f"{sign}{diff:.1f}")
+            chart_df = done[["gw", "predicted_score", "actual_score"]].sort_values("gw")
+            chart_df["gw"] = "GW" + chart_df["gw"].astype(str)
+            st.line_chart(chart_df.set_index("gw"))
+        still_open = len(rec) - len(done)
+        if still_open:
+            st.caption(f"{still_open} logged run(s) still awaiting a finished gameweek.")
+        st.dataframe(
+            rec[["date", "gw", "predicted_score", "actual_score"]].sort_values("gw", ascending=False),
+            hide_index=True, use_container_width=True,
+        )
