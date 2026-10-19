@@ -448,11 +448,17 @@ with st.sidebar.expander("Model health (backtest)"):
     run_backtest = st.button("Run backtest now (re-checks every finished gameweek)")
 
     if run_backtest:
-        with st.spinner("Fetching player histories (first run is slow, ~700 API calls)..."):
+        with st.spinner("Fetching player histories (first run is slow, ~700 API calls; "
+                         "later runs only re-fetch players whose cache is behind the "
+                         "latest finished gameweek)..."):
             boot = bt.get("bootstrap-static/")
             fixtures = bt.get("fixtures/")
             element_ids = [e["id"] for e in boot["elements"]]
-            histories = bt.fetch_all_histories(element_ids)
+            finished_gws_for_cache = [e["id"] for e in boot["events"] if e["finished"]]
+            histories = bt.fetch_all_histories(
+                element_ids,
+                latest_finished_gw=max(finished_gws_for_cache) if finished_gws_for_cache else None,
+            )
 
         finished_gws = [e["id"] for e in boot["events"] if e["finished"]]
         if not finished_gws:

@@ -40,33 +40,56 @@ MIN_GW = 2     # GW1 is impossible (no history exists yet). GW2 is thin (one
                # extra data point matters more than the noise it adds.
 
 
-def fetch_all_histories(element_ids, cache_path=CACHE_FILE, pause=0.05):
+def fetch_all_histories(element_ids, cache_path=CACHE_FILE, pause=0.05, latest_finished_gw=None):
     """
-    Pull element-summary/{id}/ for every player once and cache to disk.
-    ~700 API calls — run this alongside your weekly snapshot, not every
-    time you tweak the model. Re-running only fetches players missing from
-    the cache, so it's cheap after the first pull.
+    Pull element-summary/{id}/ for every player and cache to disk. ~700 API
+    calls on a cold cache — run this alongside your weekly snapshot, not
+    every time you tweak the model.
+
+    A player is re-fetched when either they're missing from the cache
+    entirely, OR (when latest_finished_gw is given) their cached history's
+    highest round is still behind it — otherwise a player cached once
+    early in the season stays silently frozen at whatever round they had
+    THEN forever, since "already present in the cache" used to be treated
+    as "permanently up to date" no matter how many more gameweeks had
+    since been played. This was a real bug: it meant a newly-finished
+    gameweek could become invisible to every check built on this cache
+    (backtest.py's own GW-by-GW comparison, in particular) without any
+    error — the cache file just quietly never grew past whatever round it
+    happened to stop at the first time each player was fetched.
+
+    Pass latest_finished_gw explicitly (every caller already has it, from
+    boot['events']) rather than fetching bootstrap-static here too.
     """
     cache = {}
     if os.path.exists(cache_path):
         with open(cache_path) as f:
             cache = json.load(f)
 
-    missing = [str(i) for i in element_ids if str(i) not in cache]
-    if missing:
-        print(f"{len(cache)} cached, fetching {len(missing)} more...")
-        for i, pid in enumerate(missing):
+    def is_stale(pid):
+        if pid not in cache:
+            return True
+        if latest_finished_gw is None:
+            return False
+        rounds = [h.get("round", 0) for h in cache[pid]]
+        return (max(rounds) if rounds else 0) < latest_finished_gw
+
+    to_fetch = [str(i) for i in element_ids if is_stale(str(i))]
+    if to_fetch:
+        print(f"{len(cache)} cached ({len(cache) - len([p for p in to_fetch if p in cache])} up "
+              f"to date), fetching {len(to_fetch)}...")
+        for i, pid in enumerate(to_fetch):
             data = get(f"element-summary/{pid}/")
             cache[pid] = data.get("history", [])
             if (i + 1) % 50 == 0:
-                print(f"  {i + 1}/{len(missing)}")
+                print(f"  {i + 1}/{len(to_fetch)}")
                 with open(cache_path, "w") as f:
                     json.dump(cache, f)
             time.sleep(pause)
         with open(cache_path, "w") as f:
             json.dump(cache, f)
     else:
-        print(f"{len(cache)} players cached, nothing new to fetch.")
+        print(f"{len(cache)} players cached and up to date, nothing new to fetch.")
 
     return cache
 
@@ -188,12 +211,12 @@ def main():
     fixtures = get("fixtures/")
     element_ids = [e["id"] for e in boot["elements"]]
 
-    histories = fetch_all_histories(element_ids)
-
     finished_gws = [e["id"] for e in boot["events"] if e["finished"]]
     if not finished_gws:
         raise SystemExit("No finished gameweeks yet this season — nothing to backtest.")
     test_gws = list(range(MIN_GW, max(finished_gws) + 1))
+
+    histories = fetch_all_histories(element_ids, latest_finished_gw=max(finished_gws))
 
     results = []
     for gw in test_gws:

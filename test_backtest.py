@@ -143,3 +143,63 @@ assert abs(ratio - 1.5) < 1e-9, f"expected a 1.5x calibration gap, got {ratio}"
 print("10. a scaled-up (but correctly-ranked) predictor shows up as calibration bias, not correlation OK")
 
 print("\nAll checks passed.")
+
+
+# --- fetch_all_histories staleness fix (pytest-collected; everything above
+# runs as a script at import time instead) ----------------------------------
+
+def test_fetch_all_histories_refetches_stale_players(tmp_path, monkeypatch):
+    """A player cached only up to round 5 must be re-fetched when
+    latest_finished_gw=6 is passed — this is the exact bug that made a
+    newly-finished gameweek invisible to every check built on this cache
+    (the cache treated 'already present' as 'permanently up to date')."""
+    import json
+    cache_path = tmp_path / "hist_cache_test.json"
+    cache_path.write_text(json.dumps({
+        "1": [{"round": r, "minutes": 90} for r in range(1, 6)],   # stale: stops at round 5
+    }))
+
+    calls = []
+
+    def fake_get(endpoint):
+        calls.append(endpoint)
+        return {"history": [{"round": r, "minutes": 90} for r in range(1, 7)]}
+    monkeypatch.setattr(bt, "get", fake_get)
+
+    result = bt.fetch_all_histories([1], cache_path=str(cache_path), pause=0, latest_finished_gw=6)
+    assert calls == ["element-summary/1/"], "a player stuck at round 5 must be re-fetched once GW6 finishes"
+    assert max(h["round"] for h in result["1"]) == 6
+    print("11. fetch_all_histories re-fetches a player whose cache is behind the latest finished GW  OK")
+
+
+def test_fetch_all_histories_skips_up_to_date_players(tmp_path, monkeypatch):
+    import json
+    cache_path = tmp_path / "hist_cache_test2.json"
+    cache_path.write_text(json.dumps({
+        "1": [{"round": r, "minutes": 90} for r in range(1, 7)],   # already has round 6
+    }))
+
+    def fake_get(endpoint):
+        raise AssertionError(f"should not be called for an up-to-date player: {endpoint}")
+    monkeypatch.setattr(bt, "get", fake_get)
+
+    bt.fetch_all_histories([1], cache_path=str(cache_path), pause=0, latest_finished_gw=6)
+    print("12. fetch_all_histories skips a player already up to date                OK")
+
+
+def test_fetch_all_histories_without_latest_gw_keeps_old_behaviour(tmp_path, monkeypatch):
+    """Backward compatibility: a caller that doesn't pass latest_finished_gw
+    (the old call shape) must keep the old 'missing only' behaviour, not
+    suddenly start re-fetching everyone."""
+    import json
+    cache_path = tmp_path / "hist_cache_test3.json"
+    cache_path.write_text(json.dumps({
+        "1": [{"round": r, "minutes": 90} for r in range(1, 6)],
+    }))
+
+    def fake_get(endpoint):
+        raise AssertionError(f"should not be called when latest_finished_gw is omitted: {endpoint}")
+    monkeypatch.setattr(bt, "get", fake_get)
+
+    bt.fetch_all_histories([1], cache_path=str(cache_path), pause=0)
+    print("13. omitting latest_finished_gw keeps the old 'missing only' behaviour  OK")
