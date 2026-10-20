@@ -82,6 +82,35 @@ PURCHASE_PRICES = {}
 # Internal constants — not meant to be hand-tuned per run.
 # ----------------------------------------------------------------------------
 
+# How close to PROVABLY optimal the solver must get before stopping — a
+# relative gap, not an absolute one. Verified against real data (horizon
+# 4-7, the real squad): CBC's solve time is wildly unpredictable on this
+# problem size (10-79s across runs, not a smooth function of horizon —
+# classic MILP branch-and-bound behaviour, not something tunable away by
+# picking a "safe" horizon), and proving the LAST fraction of a percent
+# of optimality is almost always what's expensive, not finding a
+# near-optimal solution in the first place. A 1% gap cut solve time from
+# ~79s to ~6s at horizon 7 while losing only ~0.3% of the objective
+# (406.99 -> 405.81 points over the whole horizon) — utterly negligible
+# next to the ~25% calibration uncertainty already known to exist in the
+# underlying predictions (see fpl_stage0.calibration_factor): chasing
+# provable optimality on numbers that uncertain isn't buying anything
+# real. Below ~0.5% the solver falls back into the slow, unpredictable
+# regime this exists to avoid — don't tighten this without re-checking
+# that tradeoff against real data first.
+SOLVER_GAP_REL = 0.01
+
+
+def solver_cmd(gap_rel=None, **kwargs):
+    """The shared CBC command every solve() call in this project should
+    use — see SOLVER_GAP_REL's comment for why. Pass gap_rel=0 to force
+    a provably-optimal solve (e.g. for a correctness check against a
+    hand-computed answer), or any other PULP_CBC_CMD kwarg through."""
+    if gap_rel is None:
+        gap_rel = SOLVER_GAP_REL
+    return pulp.PULP_CBC_CMD(msg=False, gapRel=gap_rel, **kwargs)
+
+
 # A tiny nudge so the solver doesn't leave your bench full of £4.0m zeros
 # once BOTH squad and lineup are being chosen together (see the objective's
 # comment below for why it needs to exist at all). Deliberately far too
@@ -470,7 +499,7 @@ def choose_lineup_for_week(df, squad_ids, xpts_col, tiebreak_col="xpts"):
     for p in ids:
         prob += cap[p] <= start[p]
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    prob.solve(solver_cmd())
     if pulp.LpStatus[prob.status] != "Optimal":
         raise SystemExit(
             f"Lineup solver returned {pulp.LpStatus[prob.status]} — "
@@ -718,7 +747,7 @@ def main():
         df, current_ids, bank_t
     )
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    prob.solve(solver_cmd())
     status = pulp.LpStatus[prob.status]
     if status != "Optimal":
         raise SystemExit(f"Solver returned {status} — usually means your budget "
