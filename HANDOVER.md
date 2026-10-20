@@ -625,3 +625,54 @@ section was pure duplication).
 "Lineup"/"BENCH"/the pitch's green hex color confirmed present in the
 compiled bundle. As with every mobile round, an on-device click-through
 is the one step this session can't do itself.
+
+## `cateingle-f9` session, round 10: deadline reminder (mobile/) + solver_cmd in api.py
+
+**Deadline reminder**: `src/lib/notifications.ts` — LOCAL scheduled
+notifications via `expo-notifications` (confirmed via current SDK 57
+docs, per `AGENTS.md`'s own rule, that local notifications work fully in
+Expo Go on iOS — only remote push dropped Expo Go support on Android
+from SDK 53+, which doesn't apply here). `scheduleDeadlineReminder()`
+fetches `/deadline`, cancels whatever was previously scheduled, and
+schedules one `hoursBefore` the real deadline — this app only ever
+needs ONE active reminder so there's no per-notification id
+bookkeeping. Settings gained a toggle + "hours before" field (default
+3h, persisted); `index.tsx`'s `useFocusEffect` silently re-schedules on
+every Squad-tab open so it tracks the CURRENT next deadline rather than
+one scheduled last week. Added `expo-notifications`/`expo-device`
+packages and the `expo-notifications` config plugin to `app.json` (not
+required for Expo Go, confirmed via docs — added anyway since it's free
+now and needed for an eventual native build).
+
+**`cateingle-7c` found and fixed a real perf issue independently**
+(`f9818f7`, their own session): every MILP solve across the project
+demanded provable optimality, and CBC's solve time on this problem size
+is wildly unpredictable (10-79s across horizons 4-7 on the SAME real
+squad — not a smooth function of horizon, classic branch-and-bound
+behaviour). Added `fpl_optimise.solver_cmd()` — a shared
+`PULP_CBC_CMD` wrapper with `SOLVER_GAP_REL = 0.01` (accept a solution
+within 1% of provable-optimal) — cutting worst case from ~79s to ~6s for
+~0.3% objective cost, negligible next to the ~25% calibration
+uncertainty already in the predictions. They wired it into
+`fpl_optimise.py`/`chips.py`/`app.py` but deliberately left `api.py`
+alone (my territory) and flagged it via cross-session message instead of
+touching it themselves.
+
+Applied here: `api.py`'s one `prob.solve(pulp.PULP_CBC_CMD(msg=False))`
+→ `prob.solve(opt.solver_cmd())`. This matters MORE for the deployed
+backend than it did locally — Render's free-tier CPU is presumably
+slower than a dev laptop's, and a slow `/recommend` directly shows up as
+the mobile app's loading spinner sitting there. **Measured the real
+effect, not just trusted the other session's numbers**: a horizon-7
+`/recommend` call against live data took 8.9s after the change (same
+ballpark as their reported ~6s; some variance expected against different
+squad data) — no comparable "before" timing was taken on THIS file
+specifically before applying the fix, so the before/after here is
+inferred from their measurement on the same underlying `build_problem()`
+call, not independently re-measured from a slow baseline.
+
+**Verified**: `pytest -q` (63 passed, up from 50 — reflects tests the
+other session added for `solver_cmd`/`RISK_AVERSION`/etc. in the same
+pull), api.py import/syntax check, the live horizon-7 timing above,
+mobile's usual trio (`tsc`/`lint`/`expo-doctor` clean) plus a live bundle
+test confirming "Deadline reminder"/"Hours before deadline" compiled in.

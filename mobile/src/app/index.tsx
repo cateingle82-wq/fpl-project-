@@ -4,8 +4,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import Ionicons from "@expo/vector-icons/Ionicons";
 
-import { getApiBaseUrl, getTeamId, getHorizon } from "@/lib/config";
+import { getApiBaseUrl, getTeamId, getHorizon, getReminderEnabled } from "@/lib/config";
 import { postRecommend, RecommendResponse, PlanWeek, ApiError } from "@/lib/api";
+import { scheduleDeadlineReminder } from "@/lib/notifications";
 import { colors, spacing, type } from "@/lib/theme";
 import { Card, SectionTitle, PrimaryButton, Metric, PlayerRow } from "@/components/ui";
 import { PitchView } from "@/components/pitch";
@@ -19,7 +20,18 @@ export default function HomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      (async () => setTeamId(await getTeamId()))();
+      (async () => {
+        setTeamId(await getTeamId());
+        // Keeps the reminder tracking the CURRENT next deadline rather
+        // than one scheduled last week — silent (no Alert) since this is
+        // a background refresh, not a user-initiated save. Failures
+        // (unreachable API, no permission) are deliberately swallowed
+        // here for the same reason; Settings' own save flow is where
+        // real feedback belongs.
+        if (await getReminderEnabled()) {
+          scheduleDeadlineReminder().catch(() => {});
+        }
+      })();
     }, [])
   );
 

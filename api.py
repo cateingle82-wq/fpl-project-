@@ -311,7 +311,7 @@ def recommend(req: SquadRequest):
     prob, sq, start, cap, hits, ft, tin, tout, cost_t, budget_t = opt.build_problem(
         df, current_ids, bank_t, config
     )
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    prob.solve(opt.solver_cmd())
     status = pulp.LpStatus[prob.status]
     if status != "Optimal":
         raise HTTPException(

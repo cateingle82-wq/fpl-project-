@@ -20,6 +20,8 @@ const KEYS = {
   teamId: "fpl.teamId",
   horizon: "fpl.horizon",
   apiKey: "fpl.apiKey",
+  reminderEnabled: "fpl.reminderEnabled",
+  reminderHoursBefore: "fpl.reminderHoursBefore",
 } as const;
 
 export const DEFAULT_API_BASE_URL = "http://localhost:8000";
@@ -27,6 +29,7 @@ export const DEFAULT_API_BASE_URL = "http://localhost:8000";
 // very first version of this screen hardcoded in its fetch calls, which
 // was an arbitrary placeholder, not a real backend default.
 export const DEFAULT_HORIZON = 5;
+export const DEFAULT_REMINDER_HOURS_BEFORE = 3;
 
 export async function getApiBaseUrl(): Promise<string> {
   const stored = await AsyncStorage.getItem(KEYS.apiBaseUrl);
@@ -66,4 +69,22 @@ export async function getApiKey(): Promise<string> {
 
 export async function setApiKey(key: string): Promise<void> {
   await AsyncStorage.setItem(KEYS.apiKey, key.trim());
+}
+
+export async function getReminderEnabled(): Promise<boolean> {
+  return (await AsyncStorage.getItem(KEYS.reminderEnabled)) === "true";
+}
+
+export async function setReminderEnabled(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(KEYS.reminderEnabled, String(enabled));
+}
+
+export async function getReminderHoursBefore(): Promise<number> {
+  const stored = await AsyncStorage.getItem(KEYS.reminderHoursBefore);
+  const n = stored ? Number(stored) : DEFAULT_REMINDER_HOURS_BEFORE;
+  return Number.isFinite(n) && n > 0 && n <= 48 ? n : DEFAULT_REMINDER_HOURS_BEFORE;
+}
+
+export async function setReminderHoursBefore(hours: number): Promise<void> {
+  await AsyncStorage.setItem(KEYS.reminderHoursBefore, String(hours));
 }
