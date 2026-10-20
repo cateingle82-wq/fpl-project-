@@ -56,6 +56,24 @@ MAX_TRANSFERS = 5         # hard cap on transfers used in ANY SINGLE week —
 HIT_COST = 4.0             # points docked per transfer beyond the free ones
 BAN_UNAVAILABLE = True     # don't BUY flagged players (keeping one is fine)
 
+# How much the objective penalizes a STARTING player's scoring volatility
+# (fpl_stage0.points_variance, real variance of their actual points this
+# season) — 0.0 (default) reproduces the exact previous behaviour, pure
+# expected-points maximization with no notion of risk at all. A positive
+# value makes the solver prefer a reliable floor over a boom-or-bust
+# ceiling at the same expected points (defensive, risk-averse — useful
+# e.g. protecting a mini-league lead). A NEGATIVE value does the
+# opposite: actively REWARDS variance, preferring high-ceiling
+# differentials even at the same expected points (useful when chasing
+# and a safe, average outcome doesn't help you). See build_problem's
+# objective for exactly how this is applied — a LINEAR penalty on each
+# selected starter's own variance, not a true covariance-aware portfolio
+# variance (that needs a quadratic term a MILP solver can't handle) —
+# it deliberately ignores correlation between players (e.g. two players
+# on the same team tend to blank together), a real simplification worth
+# knowing about, not a bug.
+RISK_AVERSION = 0.0
+
 # element_id -> price you actually paid, in millions.
 # Leave a player out and we assume you paid today's price (i.e. no profit).
 PURCHASE_PRICES = {}
@@ -115,6 +133,7 @@ class OptimiserConfig:
     hit_cost: float
     ban_unavailable: bool
     purchase_prices: dict = field(default_factory=dict)
+    risk_aversion: float = 0.0
 
 
 def current_config():
@@ -132,6 +151,7 @@ def current_config():
         hit_cost=HIT_COST,
         ban_unavailable=BAN_UNAVAILABLE,
         purchase_prices=dict(PURCHASE_PRICES),
+        risk_aversion=RISK_AVERSION,
     )
 
 
@@ -270,6 +290,11 @@ def build_problem(df, current_ids, bank_t, config=None):
     team = dict(zip(df["id"], df["team"]))
     now_t = dict(zip(df["id"], df["now_cost"]))          # already in tenths
     avail = dict(zip(df["id"], df["avail"]))
+    # Missing column (e.g. a synthetic test DataFrame, or
+    # fpl_stage0.USE_VARIANCE off) -> everyone's variance is 0, which
+    # with the default risk_aversion=0.0 is a complete no-op either way.
+    variance = (dict(zip(df["id"], df["points_variance"]))
+                if "points_variance" in df.columns else {p: 0.0 for p in ids})
 
     current = set(current_ids)
 
@@ -320,9 +345,20 @@ def build_problem(df, current_ids, bank_t, config=None):
         )
         for w in range(horizon)
     ]
+    # Risk term: a LINEAR penalty on each STARTING player's own real
+    # scoring variance, summed across every week they start — see
+    # RISK_AVERSION's module-level comment for what this is (and isn't:
+    # no covariance between players, a real simplification) and why it's
+    # 0.0 by default. Only the starting XI is penalized, not the bench —
+    # an unstarted player's variance doesn't cost you anything that week.
+    risk_term = pulp.lpSum(
+        variance[p] * start[w][p]
+        for w in range(horizon) for p in ids
+    )
     prob += (
         pulp.lpSum(week_terms)
         - config.hit_cost * pulp.lpSum(hits[w] for w in range(horizon))
+        - config.risk_aversion * risk_term
     )
 
     # --- squad shape, repeated for EACH week independently ---------------------

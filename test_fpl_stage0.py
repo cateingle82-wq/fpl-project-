@@ -303,6 +303,35 @@ def test_build_table_restores_availability_after_confirmed_return(monkeypatch):
     print("14. build_table restores availability from the confirmed return week onward  OK")
 
 
+def test_points_variance_uses_own_history_when_enough_games():
+    histories = {
+        # id 1: consistent (ppg=4 every game) -> variance 0
+        "1": [{"total_points": 4, "minutes": 90} for _ in range(6)],
+        # id 2: boom-or-bust (0, 12, 0, 12, 0, 12) -> real, nonzero variance
+        "2": [{"total_points": p, "minutes": 90} for p in [0, 12, 0, 12, 0, 12]],
+    }
+    df = pd.DataFrame({"id": [1, 2], "pos": ["MID", "MID"]})
+    result = fs0.points_variance(df, histories, min_games=5)
+    assert result[1] == 0.0
+    assert result[2] > 0.0
+    print("15. points_variance: a consistent player scores 0, a boom-or-bust one doesn't  OK")
+
+
+def test_points_variance_falls_back_to_position_average():
+    """A player with fewer than min_games real games gets the POSITION
+    average of everyone who does have enough, not their own (unreliable,
+    tiny-sample) variance."""
+    histories = {
+        "1": [{"total_points": p, "minutes": 90} for p in [2, 8, 2, 8, 2]],   # 5 games, has its own variance
+        "2": [{"total_points": 5, "minutes": 90}],                            # only 1 game -> fallback
+    }
+    df = pd.DataFrame({"id": [1, 2], "pos": ["MID", "MID"]})
+    result = fs0.points_variance(df, histories, min_games=5)
+    assert result[1] > 0.0
+    assert result[2] == result[1], "too few games -> must borrow the position average, not use its own 1-game number"
+    print("16. points_variance falls back to the position average for a tiny sample     OK")
+
+
 if __name__ == "__main__":
     class _MP:
         def setattr(self, obj, name, value):

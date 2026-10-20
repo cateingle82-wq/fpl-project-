@@ -144,6 +144,19 @@ max_transfers = st.sidebar.number_input(
 hit_cost = st.sidebar.number_input(
     "Hit cost (pts per extra transfer)", value=float(opt.HIT_COST), step=0.5
 )
+risk_aversion = st.sidebar.slider(
+    "Risk preference", min_value=-0.15, max_value=0.15, value=float(opt.RISK_AVERSION), step=0.01,
+    help="0 (default) = pure expected-points maximization, no notion of risk. "
+         "Positive = prefer a reliable floor over a boom-or-bust ceiling at the "
+         "same expected points (e.g. protecting a mini-league lead). Negative = "
+         "the opposite — actively prefer high-ceiling differentials even at the "
+         "same expected points (e.g. chasing, where a safe average outcome "
+         "doesn't help). This is a LINEAR penalty/reward on each starter's own "
+         "real scoring variance — it ignores correlation between players (two "
+         "players on the same team tend to blank together), a real "
+         "simplification, not a bug. Small moves matter: ±0.05 already "
+         "noticeably reshapes the XI.",
+)
 ban_unavailable = st.sidebar.checkbox("Don't buy flagged/injured players", value=opt.BAN_UNAVAILABLE)
 
 manual_squad_input = st.sidebar.text_input(
@@ -183,6 +196,7 @@ def apply_config():
     opt.FREE_TRANSFERS = int(free_transfers)
     opt.MAX_TRANSFERS = int(max_transfers)
     opt.HIT_COST = float(hit_cost)
+    opt.RISK_AVERSION = float(risk_aversion)
     opt.BAN_UNAVAILABLE = bool(ban_unavailable)
 
 

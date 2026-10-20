@@ -397,5 +397,69 @@ def run_all_checks():
     print("\nAll checks passed.")
 
 
+# --- risk_aversion (pytest-collected; run_all_checks above runs as a script
+# via __main__ instead) -------------------------------------------------------
+
+def test_risk_aversion_prefers_lower_variance_at_similar_points():
+    """Two unowned transfer targets for the SAME MID slot: TARGET0 has
+    slightly MORE points but HIGH variance, TARGET1 has slightly FEWER
+    points but LOW variance. A risk-neutral solve (risk_aversion=0, the
+    default) must prefer TARGET0's raw points; a sufficiently risk-averse
+    solve must flip to TARGET1 despite its lower points — proving the
+    risk term actually changes a real decision (which player gets
+    transferred in AND started), not just the objective's number.
+
+    All 5 squad MIDs are weakened equally (not just one) and
+    max_transfers=1 forces exactly one of the two targets in — this
+    sidesteps an easy-to-miss subtlety: the risk term only applies to
+    STARTING players (see build_problem's objective), and this project's
+    squad-shape rules leave slack in which specific players fill the
+    starting XI (MID only needs >=2 of the squad's 5) — a target that's
+    merely owned, sitting on the bench, costs nothing in risk either way
+    and would make this test pass for the wrong reason. Weakening every
+    other MID equally guarantees whichever target comes in is clearly
+    the best MID and therefore actually starts.
+    """
+    from dataclasses import replace
+
+    df, squad_ids, target_ids = make_flat_squad_df(HORIZON, n_extra_targets=2)
+    df["points_variance"] = 0.0
+
+    set_flat_xpts(df, target_ids[0], 1.8 * HORIZON)
+    df.loc[df["id"] == target_ids[0], "points_variance"] = 50.0   # higher points, high variance
+    set_flat_xpts(df, target_ids[1], 1.6 * HORIZON)
+    df.loc[df["id"] == target_ids[1], "points_variance"] = 2.0    # lower points, low variance
+
+    squad_mids = df[df["id"].isin(squad_ids) & (df["pos"] == "MID")]["id"].tolist()
+    for m in squad_mids:
+        set_flat_xpts(df, m, 0.5 * HORIZON)
+
+    base = opt.OptimiserConfig(
+        free_transfers=5, max_transfers=1, hit_cost=4.0, ban_unavailable=True,
+    )
+
+    prob, sq, st_, cap, hits, ft, tin, tout, cost_t, budget_t = opt.build_problem(
+        df, squad_ids, 10_000, replace(base, risk_aversion=0.0)
+    )
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    xi_neutral = [p for p in df["id"] if st_[0][p].value() > 0.5]
+    assert target_ids[0] in xi_neutral, "risk-neutral must start the higher-points target"
+    assert target_ids[1] not in xi_neutral
+
+    # 0.05: strong enough to flip target0 -> target1 (checked by hand
+    # against these exact numbers — their variance gap is 48/week vs a
+    # 0.2/week points gap, summed over the whole horizon) but not so
+    # strong it kills the transfer altogether in favour of doing nothing.
+    prob2, sq2, st2, cap2, hits2, ft2, tin2, tout2, cost_t2, budget_t2 = opt.build_problem(
+        df, squad_ids, 10_000, replace(base, risk_aversion=0.05)
+    )
+    prob2.solve(pulp.PULP_CBC_CMD(msg=False))
+    xi_averse = [p for p in df["id"] if st2[0][p].value() > 0.5]
+    assert target_ids[1] in xi_averse, "risk-averse must flip to starting the lower-variance target"
+    assert target_ids[0] not in xi_averse
+    print("14. risk_aversion flips the solver's choice toward lower variance   OK")
+
+
 if __name__ == "__main__":
     run_all_checks()
+    test_risk_aversion_prefers_lower_variance_at_similar_points()

@@ -100,6 +100,15 @@ RECENT_MINUTES_WEIGHT = 0.6  # weight on the recent window vs the season-long mi
 SUB_PATTERN_GAP = 0.15       # recent_start_share below recent_mins_share by more than this -> flagged
 SUB_PATTERN_DISCOUNT = 0.85  # mins_share multiplier applied when flagged — a modest, not punitive, haircut
 
+# Per-player scoring volatility (see points_variance) — feeds
+# fpl_optimise's optional risk-aversion term in the objective. Off by
+# default costs nothing extra beyond what USE_RECENT_MINUTES was already
+# fetching; computed whenever histories are available regardless of that
+# flag specifically, since a variance-aware objective is a genuinely
+# separate use of the same data, not tied to the minutes-recency feature.
+USE_VARIANCE = True
+MIN_GAMES_FOR_OWN_VARIANCE = 5   # fewer real games than this -> use the position-average variance instead
+
 # For players with very little data this season (new signings, promoted-
 # team players, the first couple of gameweeks), use the trained ML model
 # (ml_predict.py) instead of the shrinkage heuristic above — see
@@ -389,6 +398,46 @@ def recent_start_share(element_ids, histories, n=RECENT_GAMES_WINDOW):
     return out
 
 
+def points_variance(df, histories, min_games=MIN_GAMES_FOR_OWN_VARIANCE):
+    """
+    id -> variance of REAL total_points across the player's games played
+    this season (0-minute games excluded — a blank tells you nothing
+    about SCORING volatility specifically, only about playing time,
+    which mins_share/avail already cover). The signal a variance-aware
+    objective needs: two players can share the same average points while
+    one is a nailed, reliable floor (defender, clean-sheet-and-
+    appearance points every week) and the other a boom-or-bust
+    differential (explosive forward, blanks half the time) — xw{w} alone
+    can't tell them apart, since it's just a mean.
+
+    A player with fewer than `min_games` real games played gets a
+    POSITION-AVERAGE variance instead of their own (computed from
+    everyone in that position who DOES have enough games) — the same
+    "don't trust a tiny sample's own number, borrow a reasonable prior"
+    idea shrink_ppg uses for the mean, just without that function's
+    price-fit regression (overkill for a variance estimate here).
+    """
+    pos_of = dict(zip(df["id"], df["pos"]))
+    own = {}
+    for pid in df["id"]:
+        hist = histories.get(str(pid)) or histories.get(pid)
+        if not hist:
+            continue
+        pts = [h.get("total_points", 0) for h in hist if h.get("minutes", 0) > 0]
+        if len(pts) >= min_games:
+            own[pid] = float(np.var(pts))
+
+    pos_fallback = {}
+    for pos in df["pos"].unique():
+        vals = [v for pid, v in own.items() if pos_of.get(pid) == pos]
+        pos_fallback[pos] = float(np.mean(vals)) if vals else 0.0
+
+    return {
+        pid: own.get(pid, pos_fallback.get(pos_of.get(pid), 0.0))
+        for pid in df["id"]
+    }
+
+
 def calibration_factor(path=CALIBRATION_RESULTS_PATH, min_gameweeks=MIN_CALIBRATION_GAMEWEEKS):
     """
     A single multiplicative correction for every xw{w}/xpts value, i.e.
@@ -564,6 +613,11 @@ def build_table(horizon=HORIZON):
             & (df["recent_start_share"] < df["recent_mins_share"] - SUB_PATTERN_GAP)
         )
         df.loc[sub_pattern, "mins_share"] = df.loc[sub_pattern, "mins_share"] * SUB_PATTERN_DISCOUNT
+
+    if USE_VARIANCE and histories:
+        df["points_variance"] = df["id"].map(points_variance(df, histories))
+    else:
+        df["points_variance"] = 0.0
 
     df["set_piece_bonus"] = set_piece_bonus(df)
 
